@@ -28,20 +28,23 @@ jobs:
       - name: Install tracker dependencies
         run: python -m pip install -r requirements-tracker.txt
 
-      - name: Run daily forward tracker
+      - name: Run daily forward tracker and notification engine
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python forward_tracker.py
 
-      - name: Commit forward log when changed
+      - name: Commit forward and notification logs when changed
         shell: bash
         run: |
-          if git diff --quiet -- data/forward_signals.csv; then
-            echo "No forward-log change to commit."
+          if git diff --quiet -- data/forward_signals.csv data/notification_events.csv; then
+            echo "No tracked-data change to commit."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/forward_signals.csv
-          git commit -m "chore: update forward validation log"
+          git add data/forward_signals.csv data/notification_events.csv
+          git commit -m "chore: update forward validation and notification logs"
           git push
