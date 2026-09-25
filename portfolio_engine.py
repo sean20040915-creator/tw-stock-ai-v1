@@ -112,9 +112,18 @@ def _build_candidates(
                 continue
 
             row = work.loc[signal_idx]
-            quality = v_signal_quality(work, signal_index=signal_idx, horizon=5)
-            grade = str(quality.get("等級", "—"))
-            quality_score = float(quality.get("分數")) if pd.notna(quality.get("分數")) else 0.0
+            # v9 robustness scans may pre-compute V quality once and reuse it across
+            # dozens of parameter combinations. Normal v8/v9 portfolio runs still
+            # fall back to the original on-demand calculation.
+            cached_grade = row.get("_v_quality_grade")
+            cached_score = row.get("_v_quality_score")
+            if pd.notna(cached_grade) and str(cached_grade) in GRADE_RANK and pd.notna(cached_score):
+                grade = str(cached_grade)
+                quality_score = float(cached_score)
+            else:
+                quality = v_signal_quality(work, signal_index=signal_idx, horizon=5)
+                grade = str(quality.get("等級", "—"))
+                quality_score = float(quality.get("分數")) if pd.notna(quality.get("分數")) else 0.0
 
             if grade not in allowed_grades:
                 continue

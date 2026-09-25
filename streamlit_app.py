@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from portfolio_engine import build_benchmark_curve, portfolio_backtest
+from robustness_engine import combination_count, heatmap_slice, parameter_sensitivity_summary, run_parameter_scan
 
 from stock_engine import (
     MODEL_VERSION,
@@ -37,7 +38,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v8",
+    page_title="免費台股 AI 多空分析 v9",
     page_icon="📈",
     layout="wide",
 )
@@ -438,6 +439,24 @@ latest_signal = latest["signal"] or "—"
 trend = strength_label(score)
 price_delta = float(latest["close"] / prev["close"] - 1)
 
+def robustness_heatmap_chart(pivot: pd.DataFrame, title: str, percent: bool = True) -> go.Figure:
+    if pivot.empty:
+        return go.Figure()
+    z = pivot.values.astype(float)
+    text = np.empty_like(z, dtype=object)
+    for i in range(z.shape[0]):
+        for j in range(z.shape[1]):
+            v = z[i, j]
+            text[i, j] = "—" if not np.isfinite(v) else (f"{v*100:.1f}%" if percent else f"{v:.2f}")
+    fig = go.Figure(data=go.Heatmap(
+        z=z, x=[str(x) for x in pivot.columns], y=[str(y) for y in pivot.index],
+        text=text, texttemplate="%{text}", hovertemplate="最低力道=%{x}<br>最低量比=%{y}<br>%{text}<extra></extra>",
+        colorbar=dict(title="值"),
+    ))
+    fig.update_layout(title=title, xaxis_title="最低力道", yaxis_title="最低量比", height=430)
+    return fig
+
+
 header_name = f" {stock_name}" if stock_name else ""
 st.subheader(f"{stock_id}{header_name}｜最新分析：{latest['date'].date()}")
 st.caption(f"資料來源：{used_source}｜共 {len(df):,} 個交易日｜模型採 expanding-window walk-forward")
@@ -461,8 +480,8 @@ elif prob <= 0.40 and score <= 40:
 else:
     st.info("技術力道與模型機率目前沒有形成強烈同向，可視為中性或分歧。")
 
-summary_tab, strength_tab, signal_tab, strategy_tab, portfolio_tab, model_tab, daily_tab, screener_tab, forward_tab, notification_tab, data_tab = st.tabs(
-    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "投資組合模擬", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "通知中心", "資料"]
+summary_tab, strength_tab, signal_tab, strategy_tab, portfolio_tab, robustness_tab, model_tab, daily_tab, screener_tab, forward_tab, notification_tab, data_tab = st.tabs(
+    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "投資組合模擬", "參數穩健性", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "通知中心", "資料"]
 )
 
 with summary_tab:
@@ -958,6 +977,224 @@ with portfolio_tab:
             )
 
 
+with robustness_tab:
+    st.markdown("#### 🧭 v9 參數穩健性研究")
+    st.caption(
+        "一次掃描多組參數，重點不是找『歷史最高報酬』，而是觀察鄰近參數是否也能維持正期望、正報酬與可接受回撤。"
+        "v9 使用與 v8 相同的投資組合回測引擎，並限制組合數，避免免費主機運算過重。"
+    )
+
+    if "robust_universe_v9" not in st.session_state:
+        st.session_state["robust_universe_v9"] = ", ".join(WATCHLISTS["大型權值"][:6])
+
+    rr1, rr2 = st.columns([1, 2])
+    with rr1:
+        robust_pool = st.selectbox("研究股票池", ["大型權值", "AI / 電子", "金融", "ETF", "自訂"], key="robust_pool_v9")
+    with rr2:
+        if robust_pool != "自訂" and st.button("套用研究股票池", key="apply_robust_pool_v9"):
+            st.session_state["robust_universe_v9"] = ", ".join(WATCHLISTS[robust_pool][:8])
+            st.rerun()
+        robust_text = st.text_area(
+            "股票代號（建議 4～8 檔）", key="robust_universe_v9", height=82,
+            help="參數掃描會重複回測很多次，因此比一般 v8 模擬更吃運算；免費版建議先用 4～8 檔。",
+        )
+
+    with st.form("robustness_form_v9"):
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            rb_initial = st.number_input("初始資金（元）", min_value=100_000, max_value=100_000_000, value=1_000_000, step=100_000, key="rb_initial_v9")
+            rb_grades = st.multiselect("允許 V 品質", ["A", "B", "C", "D"], default=["A", "B"], key="rb_grades_v9")
+            rb_min_trades = st.slider("每組至少交易數", 3, 30, 8, 1, key="rb_min_trades_v9")
+        with a2:
+            rb_max_positions = st.slider("最多同時持股", 1, 10, 5, 1, key="rb_max_positions_v9")
+            rb_position_pct = st.slider("單檔目標資金比例（%）", 5, 50, 20, 5, key="rb_position_pct_v9")
+            rb_momentum_enabled = st.checkbox("啟用 20 日動能門檻", value=False, key="rb_momentum_enabled_v9")
+            rb_min_momentum = st.slider("最低 20 日動能（%）", -20.0, 40.0, 0.0, 1.0, disabled=not rb_momentum_enabled, key="rb_min_momentum_v9")
+        with a3:
+            st.write("掃描上限：120 組")
+            st.caption("若參數組合超過上限，請縮小其中一個範圍。")
+            st.write(f"交易成本：單邊 {one_way_cost:.2%}")
+
+        st.markdown("##### 掃描範圍")
+        b1, b2, b3, b4, b5 = st.columns(5)
+        with b1:
+            rb_strength = st.multiselect("最低力道", [50, 55, 60, 65, 70, 75], default=[55, 60, 65], key="rb_strength_v9")
+        with b2:
+            rb_volume = st.multiselect("最低量比", [0.8, 1.0, 1.2, 1.5, 2.0], default=[0.8, 1.0, 1.2], key="rb_volume_v9")
+        with b3:
+            rb_hold = st.multiselect("持有日", [5, 10, 20], default=[5, 10, 20], key="rb_hold_v9")
+        with b4:
+            rb_stop = st.multiselect("停損%", [0, 4, 6, 8, 10], default=[4, 6], key="rb_stop_v9", help="0 代表不設停損")
+        with b5:
+            rb_take = st.multiselect("停利%", [0, 8, 12, 16, 20], default=[8, 12], key="rb_take_v9", help="0 代表不設停利")
+
+        combos = combination_count(rb_strength, rb_volume, rb_hold, rb_stop, rb_take)
+        st.caption(f"目前共 {combos} 組參數。")
+        run_robust = st.form_submit_button("🧭 執行穩健性掃描", type="primary", use_container_width=True, disabled=(combos == 0 or combos > 120))
+
+    if combos > 120:
+        st.warning(f"目前有 {combos} 組，超過免費版上限 120 組。請減少一個或多個參數值。")
+
+    if run_robust:
+        tickers = parse_tickers(robust_text)
+        if not tickers:
+            st.error("請至少輸入一個股票代號。")
+        else:
+            if len(tickers) > 8:
+                st.warning("v9 免費版穩健性掃描一次最多使用前 8 檔。")
+                tickers = tickers[:8]
+            data_map_rb = {}
+            failures_rb = []
+            load_progress = st.progress(0.0, text="正在取得穩健性研究資料…")
+            for i, sid in enumerate(tickers, start=1):
+                try:
+                    raw_rb, _ = load_data(sid, years, source, token)
+                    data_map_rb[sid] = add_indicators(raw_rb)
+                except Exception as exc:
+                    failures_rb.append(f"{sid}: {exc}")
+                load_progress.progress(i / max(len(tickers), 1), text=f"載入 {sid}（{i}/{len(tickers)}）")
+            load_progress.empty()
+            if failures_rb:
+                st.warning("部分股票無法取得，已略過：" + "；".join(failures_rb[:5]))
+            if not data_map_rb:
+                st.error("沒有可用股票資料。")
+            else:
+                scan_progress = st.progress(0.0, text="正在掃描參數…")
+                status_box = st.empty()
+                def _progress(done, total, row):
+                    scan_progress.progress(done / max(total, 1), text=f"參數掃描 {done}/{total}")
+                    if done == 1 or done == total or done % 10 == 0:
+                        status_box.caption(f"已完成 {done}/{total} 組；目前交易數 {int(row.get('trades', 0))}。")
+                try:
+                    rb_results, rb_meta = run_parameter_scan(
+                        data_map_rb,
+                        stock_names=names,
+                        initial_capital=float(rb_initial),
+                        allowed_grades=tuple(rb_grades),
+                        strength_values=rb_strength,
+                        volume_values=rb_volume,
+                        hold_values=rb_hold,
+                        stop_values=rb_stop,
+                        take_values=rb_take,
+                        min_momentum_20=float(rb_min_momentum) if rb_momentum_enabled else None,
+                        one_way_cost=float(one_way_cost),
+                        max_positions=int(rb_max_positions),
+                        position_pct=float(rb_position_pct) / 100,
+                        min_trades=int(rb_min_trades),
+                        max_combinations=120,
+                        progress_callback=_progress,
+                    )
+                    st.session_state["robustness_result_v9"] = {
+                        "results": rb_results,
+                        "meta": rb_meta,
+                        "tickers": list(data_map_rb.keys()),
+                        "years": years,
+                        "min_trades": rb_min_trades,
+                    }
+                except Exception as exc:
+                    st.error(f"穩健性掃描失敗：{exc}")
+                finally:
+                    scan_progress.empty()
+                    status_box.empty()
+
+    rb = st.session_state.get("robustness_result_v9")
+    if isinstance(rb, dict) and isinstance(rb.get("results"), pd.DataFrame):
+        results_rb = rb["results"].copy()
+        meta_rb = rb.get("meta", {})
+        min_trades_rb = int(rb.get("min_trades", 8))
+        st.markdown("#### 掃描總覽")
+        q1, q2, q3, q4, q5 = st.columns(5)
+        q1.metric("參數組合", f"{int(meta_rb.get('combinations', 0))}")
+        q2.metric("達最低樣本", f"{int(meta_rb.get('eligible_combinations', 0))}")
+        q3.metric("穩健區組合", f"{int(meta_rb.get('robust_combinations', 0))}")
+        q4.metric("正期望比例", pct_text(meta_rb.get("positive_expectancy_ratio"), 1))
+        q5.metric("正報酬比例", pct_text(meta_rb.get("positive_return_ratio"), 1))
+
+        eligible_rb = results_rb[pd.to_numeric(results_rb["trades"], errors="coerce") >= min_trades_rb].copy()
+        if eligible_rb.empty:
+            st.warning("沒有任何參數組合達到最低交易樣本數。可增加歷史年數、增加 C 級，或降低最低交易數。")
+        else:
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("年化報酬中位數", pct_text(meta_rb.get("median_cagr"), 1))
+            r2.metric("每筆期望中位數", pct_text(meta_rb.get("median_expectancy"), 2))
+            r3.metric("最大回撤中位數", pct_text(meta_rb.get("median_max_drawdown"), 1))
+            robust_ratio = float(pd.to_numeric(eligible_rb["robust_region"], errors="coerce").fillna(0).mean())
+            r4.metric("穩健區占比", pct_text(robust_ratio, 1))
+
+            st.markdown("##### 穩健區候選（不是『最佳推薦』）")
+            robust_rows = eligible_rb[eligible_rb["robust_region"].eq(True)].copy()
+            if robust_rows.empty:
+                st.info("目前沒有符合 v9 穩健區條件的組合。這本身就是研究結果：代表這個股票池/期間/訊號條件對參數很敏感。")
+                robust_rows = eligible_rb.copy()
+            robust_rows = robust_rows.sort_values(["robustness_score", "neighbor_median_expectancy", "neighbor_median_cagr"], ascending=False).head(30)
+            show_rb = robust_rows[[
+                "min_strength", "min_volume_ratio", "hold_days", "stop_loss_pct", "take_profit_pct", "trades",
+                "total_return", "cagr", "max_drawdown", "sharpe", "expectancy", "win_rate", "robustness_score",
+                "neighbor_positive_expectancy_ratio", "neighbor_positive_return_ratio", "isolated_peak"
+            ]].copy()
+            for c in ["total_return", "cagr", "max_drawdown", "expectancy", "win_rate", "neighbor_positive_expectancy_ratio", "neighbor_positive_return_ratio"]:
+                show_rb[c] = (pd.to_numeric(show_rb[c], errors="coerce") * 100).round(2)
+            show_rb["robustness_score"] = pd.to_numeric(show_rb["robustness_score"], errors="coerce").round(1)
+            show_rb["sharpe"] = pd.to_numeric(show_rb["sharpe"], errors="coerce").round(2)
+            show_rb = show_rb.rename(columns={
+                "min_strength":"最低力道", "min_volume_ratio":"最低量比", "hold_days":"持有日", "stop_loss_pct":"停損%", "take_profit_pct":"停利%",
+                "trades":"交易數", "total_return":"累積報酬%", "cagr":"年化報酬%", "max_drawdown":"最大回撤%", "sharpe":"Sharpe",
+                "expectancy":"期望報酬%", "win_rate":"勝率%", "robustness_score":"穩健分數", "neighbor_positive_expectancy_ratio":"鄰近正期望%",
+                "neighbor_positive_return_ratio":"鄰近正報酬%", "isolated_peak":"孤立高峰"
+            })
+            st.dataframe(show_rb, use_container_width=True, hide_index=True)
+            st.caption("穩健分數是用來找參數『平台』的研究指標，不是未來報酬評分，也不是投資建議。孤立高峰代表自身結果突出，但鄰近參數沒有一起支持，需特別小心過度最佳化。")
+
+            st.markdown("##### 力道 × 量比：鄰近年化報酬熱圖")
+            hvals = sorted(pd.to_numeric(results_rb["hold_days"], errors="coerce").dropna().astype(int).unique().tolist())
+            svals = sorted(pd.to_numeric(results_rb["stop_loss_pct"], errors="coerce").dropna().unique().tolist())
+            tvals = sorted(pd.to_numeric(results_rb["take_profit_pct"], errors="coerce").dropna().unique().tolist())
+            hcol, scol, tcol = st.columns(3)
+            with hcol:
+                sel_h = st.selectbox("熱圖持有日", hvals, index=0, key="rb_heat_hold")
+            with scol:
+                sel_s = st.selectbox("熱圖停損%", svals, index=0, key="rb_heat_stop")
+            with tcol:
+                sel_t = st.selectbox("熱圖停利%", tvals, index=0, key="rb_heat_take")
+            pivot = heatmap_slice(results_rb, sel_h, sel_s, sel_t, metric="neighbor_median_cagr")
+            if pivot.empty:
+                st.info("這個切片沒有資料。")
+            else:
+                st.plotly_chart(robustness_heatmap_chart(pivot, "鄰近參數年化報酬中位數"), use_container_width=True)
+
+            st.markdown("##### 單一參數敏感度")
+            sensitivity = parameter_sensitivity_summary(results_rb, min_trades=min_trades_rb)
+            if sensitivity:
+                selected_param = st.selectbox(
+                    "查看哪一個參數", list(sensitivity.keys()),
+                    format_func=lambda x: {"min_strength":"最低力道", "min_volume_ratio":"最低量比", "hold_days":"持有日", "stop_loss_pct":"停損%", "take_profit_pct":"停利%"}.get(x, x),
+                    key="rb_sensitivity_param",
+                )
+                sen_show = sensitivity[selected_param].copy()
+                for c in ["累積報酬中位數", "年化報酬中位數", "期望報酬中位數", "最大回撤中位數", "正期望比例", "正報酬比例", "穩健區比例"]:
+                    if c in sen_show.columns:
+                        sen_show[c] = (pd.to_numeric(sen_show[c], errors="coerce") * 100).round(2)
+                if "Sharpe中位數" in sen_show.columns:
+                    sen_show["Sharpe中位數"] = pd.to_numeric(sen_show["Sharpe中位數"], errors="coerce").round(2)
+                st.dataframe(sen_show, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "下載全部參數掃描 CSV",
+                results_rb.to_csv(index=False).encode("utf-8-sig"),
+                file_name="parameter_robustness_v9.csv",
+                mime="text/csv",
+            )
+
+    with st.expander("v9 怎麼看，才不會把過度最佳化當成發現？"):
+        st.markdown(
+            "- **先看一片區域，不看單一最高點**：相鄰力道、量比、停損/停利都仍維持正期望，比某一格特別高更可信。\n"
+            "- **先看樣本數**：交易太少的漂亮數字沒有太大意義。\n"
+            "- **看中位數與比例**：v9 用鄰近參數的中位數與正期望比例，降低單一極端值影響。\n"
+            "- **再用 v6 前向驗證**：歷史穩健只是第一關；真正是否有效，仍要看上線後沒有重調參數的 forward record。\n"
+            "- **不要每週重新挑參數**：如果一直根據最新結果改規則，前向驗證也會被污染。"
+        )
+
+
 with model_tab:
     st.markdown("#### Walk-forward 模型檢驗")
     m1, m2, m3, m4 = st.columns(4)
@@ -1364,7 +1601,7 @@ with forward_tab:
 
 
 with notification_tab:
-    st.markdown("#### 🔔 v8 通知中心")
+    st.markdown("#### 🔔 v9 通知中心")
     st.caption(
         "GitHub Actions 每日收盤後偵測新 V/A、A 級 V、力道快速升溫，以及你自行登錄研究部位的停損／停利。"
         "就算沒有設定 Telegram 或 Discord，事件仍會寫進 data/notification_events.csv。"
@@ -1461,7 +1698,7 @@ with data_tab:
     ]].sort_values("date", ascending=False)
     st.dataframe(show, use_container_width=True, hide_index=True)
     csv = show.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v7.csv", mime="text/csv")
+    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v9.csv", mime="text/csv")
 
 st.divider()
 st.markdown(

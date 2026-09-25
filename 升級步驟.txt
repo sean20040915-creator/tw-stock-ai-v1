@@ -1,72 +1,53 @@
-免費台股 AI 多空分析系統 v8 — 從 v7 升級
+免費台股 AI 多空分析系統 v8 → v9 升級步驟
 ================================================
 
-這次比 v6/v7 更簡單：不需要碰 .github，也不修改 GitHub Actions。
+這次不需要修改 .github，也不會碰你的前向驗證 CSV。
 
-【你只需要上傳 2 個程式檔】
+1. 解壓縮 tw_stock_ai_v9_upgrade.zip
 
-1. 解壓縮 tw_stock_ai_v8_upgrade.zip
+2. 到你目前的 GitHub Repository。
 
-2. 到你原本的 GitHub Repository
+3. 上傳以下 3 個程式檔：
+   - streamlit_app.py       → 覆蓋原檔
+   - portfolio_engine.py    → 覆蓋原檔
+   - robustness_engine.py   → 新增檔案
 
-3. 上傳並覆蓋：
-   streamlit_app.py
+4. 不要刪除或覆蓋以下資料：
+   - data/forward_signals.csv
+   - data/notification_events.csv
+   - forward_watchlist.csv
+   - notification_settings.csv
+   - paper_positions.csv
+   - .github/workflows/
 
-4. 新增：
-   portfolio_engine.py
+5. 按 Commit changes。
 
-5. 按 Commit changes
+6. 回原本 Streamlit 網址重新整理。
 
-6. 不用更改以下檔案：
-   .github/workflows/forward_tracker.yml
-   .github/workflows/test_notification.yml
-   forward_tracker.py
-   notification_engine.py
-   forward_watchlist.csv
-   notification_settings.csv
-   paper_positions.csv
-   data/forward_signals.csv
-   data/notification_events.csv
+7. 成功後應看到：
+   - 網站版本顯示 v9
+   - 新頁籤「參數穩健性」
 
-7. 回原本 Streamlit 網址重新整理。
+8. 第一次測試建議：
+   股票：2330, 2317, 2454, 2308, 2382, 2303
+   歷史：5 年或 8 年
+   V 品質：A/B/C
+   最低力道：55, 60, 65
+   最低量比：0.8, 1.0, 1.2
+   持有日：5, 10, 20
+   停損：4, 6
+   停利：8, 12
 
-8. 標題應變成：
-   免費台股 AI 多空分析系統 v8
+   共 108 組。
 
-9. 頁籤應多出：
-   投資組合模擬
+9. 按「執行穩健性掃描」。
 
-【第一次建議測試】
+10. 先看：
+    - 達最低樣本的組合數
+    - 正期望比例
+    - 正報酬比例
+    - 穩健區占比
+    - 力道×量比熱圖
+    - 是否出現「孤立高峰」
 
-股票池：大型權值 → 套用這個股票池
-代號：前 8 檔即可
-初始資金：1,000,000
-最多同時持股：5
-單檔目標資金：20%
-V 品質：A、B
-最低力道：55
-最低量比：1.0
-持有：10 日
-停損：6%
-停利：12%
-0050 比較：勾選
-
-按「執行投資組合模擬」。
-
-正常時會看到：
-- 期末模擬資產
-- 累積報酬
-- 年化報酬
-- 最大回撤
-- Sharpe
-- 完成交易數
-- 勝率
-- 平均市場曝險
-- 0050 同期比較
-- 投資組合資金曲線
-- 持股數 / 現金比重
-- 個股貢獻
-- 逐筆交易
-
-【重要】
-這個升級包沒有 data/ 資料與 .github workflow，目的就是避免覆蓋 v6/v7 已累積的前向驗證與通知紀錄。
+如果沒有穩健區，不代表程式壞掉；更可能代表這個策略在目前股票池/歷史期間對參數很敏感。
