@@ -879,3 +879,261 @@ def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") 
         "A Profit Factor": a_pf,
         "技術排名分數": float(rank_score),
     }
+
+
+def strategy_lab_backtest(
+    df: pd.DataFrame,
+    allowed_grades: tuple[str, ...] = ("A", "B"),
+    min_strength: float = 55.0,
+    min_volume_ratio: float = 1.0,
+    min_momentum_20: float | None = None,
+    hold_days: int = 10,
+    stop_loss_pct: float | None = 0.06,
+    take_profit_pct: float | None = 0.12,
+    one_way_cost: float = 0.0015,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]]:
+    """Backtest a configurable long-only V-signal strategy without look-ahead.
+
+    Rules:
+    - A V signal is known only after that day's close.
+    - Entry is therefore the *next trading day's open*.
+    - Signal filters use only values available on the V-signal date.
+    - V quality uses only contemporaneous information plus earlier completed V samples.
+    - Only one full-capital position may be open at a time; overlapping V signals are ignored.
+    - Stop/take levels are fixed from entry. If both are touched in one daily bar, the
+      conservative assumption is that the stop is hit first.
+    - If no stop/take is hit, exit at the close of the selected holding-period day.
+    """
+    if hold_days < 1:
+        raise ValueError("持有天數至少要 1 個交易日。")
+    if one_way_cost < 0:
+        raise ValueError("交易成本不可為負數。")
+    if not allowed_grades:
+        raise ValueError("請至少選一個 V 品質等級。")
+
+    valid_grades = {"A", "B", "C", "D"}
+    selected_grades = tuple(g for g in allowed_grades if g in valid_grades)
+    if not selected_grades:
+        raise ValueError("V 品質等級必須為 A、B、C 或 D。")
+
+    work = df.copy()
+    if "signal" not in work.columns or "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+
+    required = [
+        "date", "open", "high", "low", "close", "signal", "strength_score",
+        "volume_ratio", "ret_20",
+    ]
+    missing = [c for c in required if c not in work.columns]
+    if missing:
+        raise ValueError(f"策略研究缺少欄位：{', '.join(missing)}")
+
+    trade_rows: list[dict] = []
+    qualifying_signals = 0
+    skipped_overlap = 0
+    skipped_incomplete = 0
+    last_exit_idx = -1
+
+    signal_indices = work.index[work["signal"].eq("V")].tolist()
+    for signal_idx in signal_indices:
+        signal_idx = int(signal_idx)
+        # Need a next-day open to avoid entering before the signal is actually known.
+        if signal_idx + 1 >= len(work):
+            continue
+
+        row = work.loc[signal_idx]
+        quality = v_signal_quality(work, signal_index=signal_idx, horizon=5)
+        grade = str(quality.get("等級", "—"))
+
+        if grade not in selected_grades:
+            continue
+        if pd.isna(row["strength_score"]) or float(row["strength_score"]) < float(min_strength):
+            continue
+        if pd.isna(row["volume_ratio"]) or float(row["volume_ratio"]) < float(min_volume_ratio):
+            continue
+        if min_momentum_20 is not None:
+            if pd.isna(row["ret_20"]) or float(row["ret_20"]) * 100 < float(min_momentum_20):
+                continue
+
+        qualifying_signals += 1
+        entry_idx = signal_idx + 1
+        # A completed backtest trade must have the full selected holding window available.
+        # Recent signals without enough future bars are excluded rather than force-closed at the data end.
+        if entry_idx + int(hold_days) - 1 >= len(work):
+            skipped_incomplete += 1
+            continue
+        if entry_idx <= last_exit_idx:
+            skipped_overlap += 1
+            continue
+
+        entry_row = work.loc[entry_idx]
+        entry_price = float(entry_row["open"])
+        if not np.isfinite(entry_price) or entry_price <= 0:
+            continue
+
+        stop_price = None
+        take_price = None
+        if stop_loss_pct is not None and float(stop_loss_pct) > 0:
+            stop_price = entry_price * (1 - float(stop_loss_pct))
+        if take_profit_pct is not None and float(take_profit_pct) > 0:
+            take_price = entry_price * (1 + float(take_profit_pct))
+
+        max_exit_idx = entry_idx + int(hold_days) - 1
+        exit_idx = max_exit_idx
+        exit_price = float(work.loc[max_exit_idx, "close"])
+        exit_reason = f"持有{int(hold_days)}日"
+
+        for j in range(entry_idx, max_exit_idx + 1):
+            day = work.loc[j]
+            day_open = float(day["open"])
+            day_high = float(day["high"])
+            day_low = float(day["low"])
+
+            # Gap handling comes first. A gap beyond a level is filled at the open,
+            # not at an impossible better stop/take price.
+            if stop_price is not None and day_open <= stop_price:
+                exit_idx = j
+                exit_price = day_open
+                exit_reason = "停損（跳空）"
+                break
+            if take_price is not None and day_open >= take_price:
+                exit_idx = j
+                exit_price = day_open
+                exit_reason = "停利（跳空）"
+                break
+
+            hit_stop = stop_price is not None and day_low <= stop_price
+            hit_take = take_price is not None and day_high >= take_price
+
+            if hit_stop and hit_take:
+                exit_idx = j
+                exit_price = float(stop_price)
+                exit_reason = "同日觸發停損/停利→保守採停損"
+                break
+            if hit_stop:
+                exit_idx = j
+                exit_price = float(stop_price)
+                exit_reason = "停損"
+                break
+            if hit_take:
+                exit_idx = j
+                exit_price = float(take_price)
+                exit_reason = "停利"
+                break
+
+        # Transaction-cost model: cost is paid on both entry and exit notionals.
+        gross_return = exit_price / entry_price - 1
+        net_return = (exit_price * (1 - float(one_way_cost))) / (
+            entry_price * (1 + float(one_way_cost))
+        ) - 1
+
+        trade_rows.append({
+            "訊號日": pd.Timestamp(row["date"]),
+            "進場日": pd.Timestamp(entry_row["date"]),
+            "出場日": pd.Timestamp(work.loc[exit_idx, "date"]),
+            "V品質": grade,
+            "V品質分數": float(quality["分數"]) if pd.notna(quality.get("分數")) else np.nan,
+            "訊號力道": float(row["strength_score"]),
+            "訊號量比": float(row["volume_ratio"]),
+            "訊號20日動能%": float(row["ret_20"] * 100) if pd.notna(row["ret_20"]) else np.nan,
+            "進場價": entry_price,
+            "出場價": exit_price,
+            "毛報酬": gross_return,
+            "淨報酬": net_return,
+            "持有交易日": int(exit_idx - entry_idx + 1),
+            "出場原因": exit_reason,
+            "_entry_idx": int(entry_idx),
+            "_exit_idx": int(exit_idx),
+        })
+        last_exit_idx = int(exit_idx)
+
+    trades = pd.DataFrame(trade_rows)
+    if trades.empty:
+        equity = pd.DataFrame(columns=["date", "equity"])
+        return trades, equity, {
+            "qualifying_signals": float(qualifying_signals),
+            "trades": 0.0,
+            "skipped_overlap": float(skipped_overlap),
+            "skipped_incomplete": float(skipped_incomplete),
+            "win_rate": np.nan,
+            "expectancy": np.nan,
+            "avg_win": np.nan,
+            "avg_loss": np.nan,
+            "payoff_ratio": np.nan,
+            "profit_factor": np.nan,
+            "total_return": 0.0,
+            "max_drawdown": 0.0,
+            "best_trade": np.nan,
+            "worst_trade": np.nan,
+            "avg_holding_days": np.nan,
+        }
+
+    net = pd.to_numeric(trades["淨報酬"], errors="coerce").dropna()
+    wins = net[net > 0]
+    losses = net[net < 0]
+    avg_win = float(wins.mean()) if len(wins) else np.nan
+    avg_loss = float(losses.mean()) if len(losses) else np.nan
+    payoff_ratio = (
+        float(avg_win / abs(avg_loss))
+        if pd.notna(avg_win) and pd.notna(avg_loss) and avg_loss != 0
+        else np.nan
+    )
+    gross_profit = float(wins.sum()) if len(wins) else 0.0
+    gross_loss = float(abs(losses.sum())) if len(losses) else 0.0
+    profit_factor = float(gross_profit / gross_loss) if gross_loss > 0 else np.nan
+
+    # Daily mark-to-market equity curve. While flat, capital is unchanged; while in a
+    # trade, the curve follows daily closes and uses the actual simulated exit price
+    # on the exit day. This makes drawdown more informative than an exit-only curve.
+    capital = 1.0
+    equity_rows: list[dict] = []
+    first_entry_idx = int(trades["_entry_idx"].min())
+    last_trade_exit_idx = int(trades["_exit_idx"].max())
+    if first_entry_idx > 0:
+        equity_rows.append({"date": pd.Timestamp(work.loc[first_entry_idx - 1, "date"]), "equity": 1.0})
+
+    trade_records = trades.sort_values("_entry_idx").to_dict("records")
+    tpos = 0
+    current = None
+    shares = 0.0
+    for j in range(first_entry_idx, last_trade_exit_idx + 1):
+        if current is None and tpos < len(trade_records) and j == int(trade_records[tpos]["_entry_idx"]):
+            current = trade_records[tpos]
+            entry_price = float(current["進場價"])
+            shares = capital / (entry_price * (1 + float(one_way_cost)))
+
+        if current is None:
+            value = capital
+        elif j == int(current["_exit_idx"]):
+            value = shares * float(current["出場價"]) * (1 - float(one_way_cost))
+            capital = value
+            current = None
+            shares = 0.0
+            tpos += 1
+        else:
+            value = shares * float(work.loc[j, "close"])
+
+        equity_rows.append({"date": pd.Timestamp(work.loc[j, "date"]), "equity": float(value)})
+
+    equity = pd.DataFrame(equity_rows)
+    total_return = float(equity["equity"].iloc[-1] - 1) if not equity.empty else 0.0
+    stats = {
+        "qualifying_signals": float(qualifying_signals),
+        "trades": float(len(trades)),
+        "skipped_overlap": float(skipped_overlap),
+        "skipped_incomplete": float(skipped_incomplete),
+        "win_rate": float((net > 0).mean()) if len(net) else np.nan,
+        "expectancy": float(net.mean()) if len(net) else np.nan,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "payoff_ratio": payoff_ratio,
+        "profit_factor": profit_factor,
+        "total_return": total_return,
+        "max_drawdown": max_drawdown(equity["equity"]) if not equity.empty else 0.0,
+        "best_trade": float(net.max()) if len(net) else np.nan,
+        "worst_trade": float(net.min()) if len(net) else np.nan,
+        "avg_holding_days": float(pd.to_numeric(trades["持有交易日"], errors="coerce").mean()),
+    }
+    trades = trades.drop(columns=["_entry_idx", "_exit_idx"], errors="ignore")
+    return trades, equity, stats

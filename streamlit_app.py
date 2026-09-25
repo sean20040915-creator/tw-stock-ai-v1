@@ -21,6 +21,7 @@ from stock_engine import (
     recent_signal_log,
     signal_performance_stats,
     signal_expectancy_stats,
+    strategy_lab_backtest,
     strength_label,
     technical_screen_row,
     train_prediction_model,
@@ -30,7 +31,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v4",
+    page_title="免費台股 AI 多空分析 v5",
     page_icon="📈",
     layout="wide",
 )
@@ -79,9 +80,9 @@ def load_stock_info(token: str):
 
 
 def pct_text(x: float, digits: int = 1) -> str:
-    if x is None or (isinstance(x, float) and math.isnan(x)):
+    if x is None or pd.isna(x):
         return "—"
-    return f"{x * 100:.{digits}f}%"
+    return f"{float(x) * 100:.{digits}f}%"
 
 
 def no_weekend(fig: go.Figure) -> go.Figure:
@@ -191,6 +192,20 @@ def backtest_chart(bt: pd.DataFrame) -> go.Figure:
     return no_weekend(fig)
 
 
+def strategy_equity_chart(equity: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if not equity.empty:
+        fig.add_trace(go.Scatter(x=equity["date"], y=equity["equity"], name="策略資金曲線", mode="lines+markers"))
+    fig.add_hline(y=1.0, line_dash="dot")
+    fig.update_layout(
+        height=420,
+        margin=dict(l=10, r=10, t=35, b=10),
+        yaxis_title="資產倍數",
+        hovermode="x unified",
+    )
+    return no_weekend(fig)
+
+
 def parse_tickers(text: str) -> list[str]:
     for ch in ["，", "、", ";", "；", "\n", "\t"]:
         text = text.replace(ch, ",")
@@ -267,8 +282,8 @@ def watchlist_csv_bytes(tickers: list[str], names: dict[str, str]) -> bytes:
 if "watchlist_text" not in st.session_state:
     st.session_state["watchlist_text"] = ", ".join(WATCHLISTS["大型權值"][:10])
 
-st.title("📈 免費台股 AI 多空分析系統 v4")
-st.caption("每日訊號中心｜近 1/3/5 日新 V｜力道升溫｜V 品質｜期望報酬｜Walk-forward")
+st.title("📈 免費台股 AI 多空分析系統 v5")
+st.caption("策略研究實驗室｜每日訊號中心｜V 品質｜停損停利回測｜期望報酬｜Walk-forward")
 
 with st.sidebar:
     st.header("個股分析設定")
@@ -301,7 +316,7 @@ with st.sidebar:
         st.session_state["one_way_cost_pct"] = one_way_cost_pct
 
     st.divider()
-    st.caption("v4 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
+    st.caption("v5 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
@@ -361,8 +376,8 @@ elif prob <= 0.40 and score <= 40:
 else:
     st.info("技術力道與模型機率目前沒有形成強烈同向，可視為中性或分歧。")
 
-summary_tab, strength_tab, signal_tab, model_tab, daily_tab, screener_tab, data_tab = st.tabs(
-    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "資料"]
+summary_tab, strength_tab, signal_tab, strategy_tab, model_tab, daily_tab, screener_tab, data_tab = st.tabs(
+    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "資料"]
 )
 
 with summary_tab:
@@ -375,7 +390,7 @@ with summary_tab:
 
 with strength_tab:
     st.plotly_chart(strength_candle_chart(df), use_container_width=True)
-    st.caption("v4 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
+    st.caption("v5 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
     st.caption("四色力道、翻轉線與 V/A 規則都是本專案自行設計，不是參考網站的專有公式。")
 
 
@@ -455,10 +470,181 @@ with signal_tab:
         st.download_button(
             "下載 V/A 歷史紀錄 CSV",
             log.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{stock_id}_va_history_v4.csv",
+            file_name=f"{stock_id}_va_history_v5.csv",
             mime="text/csv",
         )
     st.caption("樣本數少時勝率容易大幅波動；請同時看樣本數、不同期間與 walk-forward 結果，不要只看單一百分比。")
+
+
+with strategy_tab:
+    st.markdown("#### V 訊號策略研究實驗室")
+    st.caption(
+        "把 V 訊號轉成可重複檢驗的規則。訊號在收盤後才知道，因此一律使用『下一交易日開盤』進場；"
+        "同一時間只持有一筆部位，避免把同一筆資金重複計算。"
+    )
+
+    with st.form("strategy_lab_form"):
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            grade_options = st.multiselect(
+                "允許的 V 品質",
+                ["A", "B", "C", "D"],
+                default=["A", "B"],
+                help="品質分級只使用訊號當下資料與更早已完成的 V 樣本。",
+            )
+            lab_min_strength = st.slider("最低力道", 50, 90, 55, 1)
+            lab_min_volume = st.slider("最低量比", 0.5, 3.0, 1.0, 0.1)
+        with p2:
+            momentum_enabled = st.checkbox("啟用 20 日動能門檻", value=False)
+            lab_min_momentum = st.slider("最低 20 日動能（%）", -20.0, 40.0, 0.0, 1.0, disabled=not momentum_enabled)
+            lab_hold_days = st.selectbox("最長持有交易日", [5, 10, 20], index=1)
+        with p3:
+            stop_enabled = st.checkbox("啟用停損", value=True)
+            lab_stop = st.slider("停損（%）", 1.0, 20.0, 6.0, 0.5, disabled=not stop_enabled)
+            take_enabled = st.checkbox("啟用停利", value=True)
+            lab_take = st.slider("停利（%）", 2.0, 40.0, 12.0, 0.5, disabled=not take_enabled)
+
+        run_lab = st.form_submit_button("🧪 執行策略回測", type="primary", use_container_width=True)
+
+    if run_lab:
+        try:
+            trades, equity, lab_stats = strategy_lab_backtest(
+                df,
+                allowed_grades=tuple(grade_options),
+                min_strength=float(lab_min_strength),
+                min_volume_ratio=float(lab_min_volume),
+                min_momentum_20=float(lab_min_momentum) if momentum_enabled else None,
+                hold_days=int(lab_hold_days),
+                stop_loss_pct=float(lab_stop) / 100 if stop_enabled else None,
+                take_profit_pct=float(lab_take) / 100 if take_enabled else None,
+                one_way_cost=float(one_way_cost),
+            )
+            st.session_state["strategy_lab_v5"] = {
+                "trades": trades,
+                "equity": equity,
+                "stats": lab_stats,
+                "stock_id": stock_id,
+                "data_len": len(df),
+                "data_last_date": pd.Timestamp(df.iloc[-1]["date"]).date().isoformat(),
+                "params": {
+                    "grades": grade_options,
+                    "min_strength": lab_min_strength,
+                    "min_volume": lab_min_volume,
+                    "momentum_enabled": momentum_enabled,
+                    "min_momentum": lab_min_momentum,
+                    "hold_days": lab_hold_days,
+                    "stop_enabled": stop_enabled,
+                    "stop": lab_stop,
+                    "take_enabled": take_enabled,
+                    "take": lab_take,
+                    "one_way_cost": one_way_cost,
+                },
+            }
+        except Exception as exc:
+            st.error(f"策略回測無法完成：{exc}")
+
+    lab = st.session_state.get("strategy_lab_v5")
+    current_data_last_date = pd.Timestamp(df.iloc[-1]["date"]).date().isoformat()
+    lab_matches_current_data = (
+        isinstance(lab, dict)
+        and lab.get("stock_id") == stock_id
+        and lab.get("data_len") == len(df)
+        and lab.get("data_last_date") == current_data_last_date
+    )
+    if lab_matches_current_data:
+        trades = lab.get("trades", pd.DataFrame())
+        equity = lab.get("equity", pd.DataFrame())
+        lab_stats = lab.get("stats", {})
+        params = lab.get("params", {})
+
+        if isinstance(trades, pd.DataFrame) and trades.empty:
+            st.warning(
+                "這組條件沒有產生實際交易。可以嘗試加入 C 級、降低最低力道或量比，或把歷史資料期間改成 5/8 年。"
+            )
+            q1, q2 = st.columns(2)
+            q1.metric("符合條件 V 訊號", int(lab_stats.get("qualifying_signals", 0)))
+            q2.metric("實際交易", 0)
+        elif isinstance(trades, pd.DataFrame):
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric("實際交易", f"{int(lab_stats.get('trades', 0))}")
+            r2.metric("勝率", pct_text(lab_stats.get("win_rate", np.nan)))
+            r3.metric("每筆期望淨報酬", pct_text(lab_stats.get("expectancy", np.nan), 2))
+            r4.metric("盈虧比", "—" if pd.isna(lab_stats.get("payoff_ratio", np.nan)) else f"{lab_stats['payoff_ratio']:.2f}")
+            r5.metric("Profit Factor", "—" if pd.isna(lab_stats.get("profit_factor", np.nan)) else f"{lab_stats['profit_factor']:.2f}")
+
+            r6, r7, r8, r9, r10 = st.columns(5)
+            r6.metric("累積報酬", pct_text(lab_stats.get("total_return", np.nan)))
+            r7.metric("最大回撤", pct_text(lab_stats.get("max_drawdown", np.nan)))
+            r8.metric("平均獲利", pct_text(lab_stats.get("avg_win", np.nan), 2))
+            r9.metric("平均虧損", pct_text(lab_stats.get("avg_loss", np.nan), 2))
+            r10.metric("平均持有日", f"{lab_stats.get('avg_holding_days', np.nan):.1f}")
+
+            st.plotly_chart(strategy_equity_chart(equity), use_container_width=True)
+
+            qualifying = int(lab_stats.get("qualifying_signals", 0))
+            overlap = int(lab_stats.get("skipped_overlap", 0))
+            incomplete = int(lab_stats.get("skipped_incomplete", 0))
+            st.caption(
+                f"符合篩選的 V 訊號 {qualifying} 次；其中 {overlap} 次因前一筆交易尚未出場而略過，"
+                f"{incomplete} 次因最新資料尚未走滿持有期而不納入績效。"
+                f"交易成本：單邊 {float(params.get('one_way_cost', one_way_cost)):.2%}。"
+            )
+
+            st.markdown("##### 逐筆交易紀錄")
+            trade_show = trades.copy()
+            for c in ["毛報酬", "淨報酬"]:
+                trade_show[c.replace("報酬", "報酬%") ] = (pd.to_numeric(trade_show[c], errors="coerce") * 100).round(2)
+            trade_show = trade_show.drop(columns=[c for c in ["毛報酬", "淨報酬"] if c in trade_show.columns])
+            for c in ["V品質分數", "訊號力道", "訊號量比", "訊號20日動能%", "進場價", "出場價"]:
+                if c in trade_show.columns:
+                    trade_show[c] = pd.to_numeric(trade_show[c], errors="coerce").round(2)
+            st.dataframe(trade_show.sort_values("進場日", ascending=False), use_container_width=True, hide_index=True)
+            st.download_button(
+                "下載策略交易紀錄 CSV",
+                trade_show.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"{stock_id}_strategy_lab_v5.csv",
+                mime="text/csv",
+            )
+
+            st.markdown("##### 相同條件：持有 5 / 10 / 20 日快速比較")
+            compare_rows = []
+            for compare_hold in (5, 10, 20):
+                _, _, cs = strategy_lab_backtest(
+                    df,
+                    allowed_grades=tuple(params.get("grades", ["A", "B"])),
+                    min_strength=float(params.get("min_strength", 55)),
+                    min_volume_ratio=float(params.get("min_volume", 1.0)),
+                    min_momentum_20=float(params.get("min_momentum", 0.0)) if params.get("momentum_enabled") else None,
+                    hold_days=compare_hold,
+                    stop_loss_pct=float(params.get("stop", 6.0)) / 100 if params.get("stop_enabled") else None,
+                    take_profit_pct=float(params.get("take", 12.0)) / 100 if params.get("take_enabled") else None,
+                    one_way_cost=float(params.get("one_way_cost", one_way_cost)),
+                )
+                compare_rows.append({
+                    "持有上限": f"{compare_hold}日",
+                    "交易數": int(cs.get("trades", 0)),
+                    "勝率%": cs.get("win_rate", np.nan) * 100,
+                    "期望淨報酬%": cs.get("expectancy", np.nan) * 100,
+                    "盈虧比": cs.get("payoff_ratio", np.nan),
+                    "Profit Factor": cs.get("profit_factor", np.nan),
+                    "累積報酬%": cs.get("total_return", np.nan) * 100,
+                    "最大回撤%": cs.get("max_drawdown", np.nan) * 100,
+                })
+            compare_df = pd.DataFrame(compare_rows)
+            for c in ["勝率%", "期望淨報酬%", "盈虧比", "Profit Factor", "累積報酬%", "最大回撤%"]:
+                compare_df[c] = pd.to_numeric(compare_df[c], errors="coerce").round(2)
+            st.dataframe(compare_df, use_container_width=True, hide_index=True)
+
+    with st.expander("v5 策略回測規則與限制"):
+        st.markdown(
+            "- **進場**：V 訊號當天收盤後才知道，因此下一交易日開盤進場，避免偷看未來。\n"
+            "- **篩選**：品質、力道、量比、20 日動能都只使用 V 訊號當天已知資料。\n"
+            "- **部位**：一次只持有一筆、假設每筆使用全部研究資金；持倉中出現的新 V 會略過。\n"
+            "- **停損 / 停利**：用日 K 高低價判斷；若同一天兩者都被觸及，採較保守的『停損先發生』假設。\n"
+            "- **跳空**：若開盤已越過停損/停利價，使用實際開盤價出場。\n"
+            "- **成本**：進場與出場各扣一次側欄設定的單邊成本。尚未模擬滑價、股利與完整稅費差異。"
+        )
+
 
 with model_tab:
     st.markdown("#### Walk-forward 模型檢驗")
@@ -489,7 +675,7 @@ with model_tab:
 
 with daily_tab:
     st.markdown("#### 每日訊號中心 / 我的自選股")
-    st.caption("v4 把自選股掃描升級成訊號工作台：近 1/3/5 日新 V、力道升溫、連續轉強、最近 V 品質，以及勝率以外的期望報酬與盈虧比。每次仍最多掃 25 檔。")
+    st.caption("v5 把自選股掃描升級成訊號工作台：近 1/3/5 日新 V、力道升溫、連續轉強、最近 V 品質，以及勝率以外的期望報酬與盈虧比。每次仍最多掃 25 檔。")
 
     up_col, preset_col = st.columns([2, 3])
     with up_col:
@@ -529,7 +715,7 @@ with daily_tab:
         use_container_width=True,
     )
 
-    if st.button("📡 掃描 v4 訊號中心", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
+    if st.button("📡 掃描 v5 訊號中心", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
         progress = st.progress(0, text="開始掃描自選股…")
         rows = []
         errors = []
@@ -541,10 +727,10 @@ with daily_tab:
             except Exception as exc:
                 errors.append(f"{ticker}: {exc}")
         progress.progress(1.0, text="掃描完成")
-        st.session_state["daily_signal_result_v4"] = pd.DataFrame(rows)
-        st.session_state["daily_signal_errors_v4"] = errors
+        st.session_state["daily_signal_result_v5"] = pd.DataFrame(rows)
+        st.session_state["daily_signal_errors_v5"] = errors
 
-    daily_result = st.session_state.get("daily_signal_result_v4")
+    daily_result = st.session_state.get("daily_signal_result_v5")
     if isinstance(daily_result, pd.DataFrame) and not daily_result.empty:
         latest_dates = pd.to_datetime(daily_result["資料日"], errors="coerce")
         common_latest = latest_dates.max().date().isoformat() if latest_dates.notna().any() else "—"
@@ -568,7 +754,7 @@ with daily_tab:
             "快速篩選",
             ["全部", "近1日新V", "近3日新V", "近5日新V", "快速升溫", "連續轉強", "近3日新A", "強多", "強空"],
             horizontal=True,
-            key="daily_filter_v4",
+            key="daily_filter_v5",
         )
         filtered = daily_result.copy()
         if filter_label in {"近1日新V", "近3日新V", "近5日新V", "近3日新A"}:
@@ -585,7 +771,7 @@ with daily_tab:
         sort_mode = st.selectbox(
             "排序",
             ["V品質分數", "力道3日變化", "力道", "技術排名分數", "V後5日期望報酬%", "V盈虧比", "20日動能%"],
-            key="daily_sort_v4",
+            key="daily_sort_v5",
         )
         filtered = filtered.sort_values(sort_mode, ascending=False, na_position="last").reset_index(drop=True)
 
@@ -611,9 +797,9 @@ with daily_tab:
                 show_daily[c] = pd.to_numeric(show_daily[c], errors="coerce").round(2)
         st.dataframe(show_daily, use_container_width=True, hide_index=True)
         st.download_button(
-            "下載 v4 每日訊號總表 CSV",
+            "下載 v5 每日訊號總表 CSV",
             filtered.to_csv(index=False).encode("utf-8-sig"),
-            file_name="tw_stock_daily_signals_v4.csv",
+            file_name="tw_stock_daily_signals_v5.csv",
             mime="text/csv",
         )
 
@@ -628,7 +814,7 @@ with daily_tab:
                     focus[c] = pd.to_numeric(focus[c], errors="coerce").round(2)
             st.dataframe(focus, use_container_width=True, hide_index=True)
 
-        with st.expander("v4 訊號中心判定規則"):
+        with st.expander("v5 訊號中心判定規則"):
             st.markdown(
                 "- **近 1/3/5 日新 V**：最近一次 V 距最新資料日分別為 0、≤2、≤4 個交易日。\n"
                 "- **連續轉強**：力道分數連續上升至少 2 個交易日。\n"
@@ -647,14 +833,14 @@ with daily_tab:
 
         st.caption("這些分級與排序是研究用訊號整理，不代表適合買進、賣出或保證未來報酬。不同資料來源若更新時間不同，請以各列『資料日』為準。")
 
-    daily_errors = st.session_state.get("daily_signal_errors_v4", [])
+    daily_errors = st.session_state.get("daily_signal_errors_v5", [])
     if daily_errors:
         with st.expander(f"有 {len(daily_errors)} 檔未成功取得資料"):
             st.write("\n".join(daily_errors))
 
 with screener_tab:
     st.markdown("#### 免費觀察池選股排行")
-    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v4 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
+    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v5 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
     left, right = st.columns([1, 2])
     with left:
         pool = st.selectbox("內建股票池", list(WATCHLISTS.keys()), key="screen_pool")
@@ -696,7 +882,7 @@ with screener_tab:
             show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
         st.dataframe(show, use_container_width=True, hide_index=True)
         csv = show.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v4.csv", "text/csv")
+        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v5.csv", "text/csv")
         st.caption("技術排名分數 = 60% 力道 + 20% 20日動能 + 10% 量價 + 10% 20日區間位置；沒有使用未來資料。")
 
     screen_errors = st.session_state.get("screen_errors", [])
@@ -711,7 +897,7 @@ with data_tab:
     ]].sort_values("date", ascending=False)
     st.dataframe(show, use_container_width=True, hide_index=True)
     csv = show.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v4.csv", mime="text/csv")
+    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v5.csv", mime="text/csv")
 
 st.divider()
 st.markdown(
