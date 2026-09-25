@@ -1,29 +1,43 @@
-免費台股 AI 多空分析系統 v2 → v3
-==================================
+免費台股 AI 多空分析系統 v3 → v4
+====================================
 
-你不用重建 Streamlit 網站，也不用換網址。
+你不需要重建 Streamlit 網站，也不用換網址。
 
-1. 下載並解壓縮 v3。
-2. 打開你原本的 GitHub repository。
-3. 把下面 3 個檔案上傳並覆蓋：
-   - streamlit_app.py
-   - stock_engine.py
-   - requirements.txt
-4. 按 Commit changes。
-5. 回到原本的 Streamlit 網站，等待重新部署。
-6. 網站標題應變成：免費台股 AI 多空分析系統 v3
+步驟 1
+下載並解壓縮 tw_stock_ai_v4.zip
 
-建議先測試：
-A. 2330 個股分析
-B. V/A 歷史統計
-C. 每日訊號 / 自選股 → 預設清單 → 掃描最新訊號
-D. 下載自選股 CSV
-E. 匯入剛下載的 CSV
+步驟 2
+打開你原本的 GitHub repository：tw-stock-ai-v1（或你實際使用的 repository）
 
-如果 GitHub 更新後畫面沒變：
-- 到 Streamlit 的 Manage app / App settings 執行 Reboot。
+步驟 3
+把下面 3 個檔案上傳並覆蓋原檔：
+
+1. streamlit_app.py
+2. stock_engine.py
+3. requirements.txt
+
+README.md 可一起更新，但不影響網站執行。
+
+步驟 4
+GitHub 按 Commit changes。
+
+步驟 5
+回到原本的 Streamlit 網址。
+Streamlit Community Cloud 通常會依 GitHub 新版本重新部署。
+若仍顯示舊版，可重新整理網頁。
+
+成功後網站標題應顯示：
+「免費台股 AI 多空分析系統 v4」
+
+建議測試：
+1. 查 2330。
+2. V/A 歷史統計 → 看期望報酬 / 盈虧比。
+3. 每日訊號中心 → 先掃 5–10 檔。
+4. 測試近1日新V、近3日新V、近5日新V。
+5. 測試快速升溫、連續轉強。
+6. 查看最近 V 品質 A/B/C/D 與品質分數。
+7. 下載 v4 每日訊號 CSV。
 
 注意：
-- 自選股使用免費的 Session State，不是永久資料庫。
-- 建議把自選股 CSV 存在自己的電腦/手機，需要時重新匯入。
-- 每次最多掃 25 檔，避免免費 API 額度過快耗盡。
+A/B/C/D 是研究用訊號品質分級，不是買進建議。
+歷史勝率、期望報酬與盈虧比均不保證未來結果。

@@ -576,11 +576,201 @@ def recent_signal_log(
     return out.tail(limit).sort_values("日期", ascending=False).reset_index(drop=True)
 
 
+def _directional_signal_sample(
+    work: pd.DataFrame,
+    signal: str,
+    horizon: int,
+    before_index: int | None = None,
+) -> pd.Series:
+    """Completed directional returns for one signal type.
+
+    If before_index is supplied, only signals whose outcome was already observable
+    before that row are included. This is used by the contemporaneous V quality score
+    to avoid letting the current signal benefit from its own future outcome.
+    """
+    frame = work.sort_values("date").reset_index(drop=True).copy()
+    forward = frame["close"].shift(-horizon) / frame["close"] - 1
+    mask = frame["signal"].eq(signal) & forward.notna()
+    if before_index is not None:
+        # Outcome at i is known only when i + horizon < before_index.
+        positions = pd.Series(np.arange(len(frame)), index=frame.index)
+        mask &= (positions + int(horizon)) < int(before_index)
+    raw = forward.loc[mask]
+    return raw if signal == "V" else -raw
+
+
+def signal_expectancy_stats(
+    df: pd.DataFrame,
+    horizons: tuple[int, ...] = (5, 10, 20),
+) -> pd.DataFrame:
+    """Return win/loss economics for historical V/A signals.
+
+    Returns are converted to a directional basis: positive means the signal direction
+    was correct (price up after V, price down after A). This is ex-post research only.
+    """
+    work = df.copy()
+    if "signal" not in work.columns or "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+
+    rows: list[dict] = []
+    for horizon in horizons:
+        for signal in ("V", "A"):
+            directional = _directional_signal_sample(work, signal, horizon)
+            if directional.empty:
+                rows.append({
+                    "訊號": signal,
+                    "期間": f"{horizon}日",
+                    "樣本數": 0,
+                    "勝率": np.nan,
+                    "期望方向報酬": np.nan,
+                    "平均獲利": np.nan,
+                    "平均虧損": np.nan,
+                    "盈虧比": np.nan,
+                    "Profit Factor": np.nan,
+                })
+                continue
+
+            wins = directional[directional > 0]
+            losses = directional[directional < 0]
+            avg_win = float(wins.mean()) if len(wins) else np.nan
+            avg_loss = float(losses.mean()) if len(losses) else np.nan
+            payoff = (
+                float(avg_win / abs(avg_loss))
+                if pd.notna(avg_win) and pd.notna(avg_loss) and avg_loss != 0
+                else np.nan
+            )
+            gross_profit = float(wins.sum()) if len(wins) else 0.0
+            gross_loss = float(abs(losses.sum())) if len(losses) else 0.0
+            profit_factor = float(gross_profit / gross_loss) if gross_loss > 0 else np.nan
+
+            rows.append({
+                "訊號": signal,
+                "期間": f"{horizon}日",
+                "樣本數": int(len(directional)),
+                "勝率": float((directional > 0).mean()),
+                "期望方向報酬": float(directional.mean()),
+                "平均獲利": avg_win,
+                "平均虧損": avg_loss,
+                "盈虧比": payoff,
+                "Profit Factor": profit_factor,
+            })
+    return pd.DataFrame(rows)
+
+
+def _signal_quality_grade(score: float | None) -> str:
+    if score is None or pd.isna(score):
+        return "—"
+    if score >= 80:
+        return "A"
+    if score >= 68:
+        return "B"
+    if score >= 55:
+        return "C"
+    return "D"
+
+
+def v_signal_quality(
+    df: pd.DataFrame,
+    signal_index: int | None = None,
+    horizon: int = 5,
+) -> dict[str, float | int | str]:
+    """Explainable quality score for a V signal, using only information available then.
+
+    70 points come from contemporaneous technical conditions. Up to 30 points come
+    from *earlier completed* V signals. The current V signal's future return can never
+    enter its own quality score.
+    """
+    work = df.copy()
+    if "signal" not in work.columns or "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+
+    if signal_index is None:
+        idxs = work.index[work["signal"].eq("V")].tolist()
+        if not idxs:
+            return {"分數": np.nan, "等級": "—", "歷史樣本": 0, "歷史勝率": np.nan, "歷史期望報酬": np.nan}
+        signal_index = int(idxs[-1])
+    signal_index = int(signal_index)
+    if signal_index < 0 or signal_index >= len(work) or work.loc[signal_index, "signal"] != "V":
+        return {"分數": np.nan, "等級": "—", "歷史樣本": 0, "歷史勝率": np.nan, "歷史期望報酬": np.nan}
+
+    row = work.loc[signal_index]
+    tech = 0.0
+    # 25: raw strength above the V trigger, saturated near 80.
+    tech += float(np.clip((float(row["strength_score"]) - 55.0) / 25.0, 0, 1)) * 25
+    # 15: trend alignment.
+    tech += 10 if pd.notna(row["ma20"]) and pd.notna(row["ma60"]) and row["ma20"] > row["ma60"] else 0
+    tech += 5 if pd.notna(row["ma20"]) and row["close"] > row["ma20"] else 0
+    # 10: momentum quality.
+    tech += 5 if pd.notna(row["macd_hist"]) and row["macd_hist"] > 0 else 0
+    tech += 5 if pd.notna(row["rsi14"]) and 50 <= row["rsi14"] <= 75 else 0
+    # 8: volume participation, capped to avoid extreme-volume distortion.
+    volume_ratio = float(row["volume_ratio"]) if pd.notna(row["volume_ratio"]) else 1.0
+    tech += float(np.clip((volume_ratio - 0.8) / 0.8, 0, 1)) * 8
+    # 7: location inside the recent 20-day range.
+    location = float(row["breakout_pos20"]) if pd.notna(row["breakout_pos20"]) else 0.5
+    tech += float(np.clip((location - 0.45) / 0.55, 0, 1)) * 7
+    # 5: strength slope known at the signal date.
+    if signal_index >= 3:
+        delta3 = float(row["strength_score"] - work.loc[signal_index - 3, "strength_score"])
+        tech += float(np.clip(delta3 / 15.0, 0, 1)) * 5
+
+    hist = _directional_signal_sample(work, "V", horizon, before_index=signal_index)
+    hist_n = int(len(hist))
+    if hist_n:
+        win_rate = float((hist > 0).mean())
+        expectancy = float(hist.mean())
+    else:
+        win_rate = np.nan
+        expectancy = np.nan
+
+    history_points = 0.0
+    # Up to 10 points for sample depth, 10 for win rate, 10 for expectancy.
+    history_points += min(hist_n / 12.0, 1.0) * 10
+    if pd.notna(win_rate):
+        history_points += float(np.clip((win_rate - 0.40) / 0.25, 0, 1)) * 10
+    if pd.notna(expectancy):
+        history_points += float(np.clip((expectancy + 0.005) / 0.035, 0, 1)) * 10
+
+    score = float(np.clip(tech + history_points, 0, 100))
+    return {
+        "分數": score,
+        "等級": _signal_quality_grade(score),
+        "技術分": float(tech),
+        "歷史分": float(history_points),
+        "歷史樣本": hist_n,
+        "歷史勝率": win_rate,
+        "歷史期望報酬": expectancy,
+    }
+
+
+def _bars_since_latest(work: pd.DataFrame, signal: str) -> float:
+    idxs = work.index[work["signal"].eq(signal)].tolist()
+    if not idxs:
+        return np.nan
+    return float(len(work) - 1 - int(idxs[-1]))
+
+
+def _consecutive_rising_steps(series: pd.Series) -> int:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if len(values) < 2:
+        return 0
+    diffs = values.diff().dropna().to_numpy()
+    count = 0
+    for x in diffs[::-1]:
+        if x > 0:
+            count += 1
+        else:
+            break
+    return int(count)
+
+
 def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") -> dict:
-    """Compact daily dashboard row for a watchlist scan."""
+    """v4 daily signal-center row with recent-V windows and signal economics."""
     enriched = add_indicators(df).sort_values("date").reset_index(drop=True)
     clean = enriched.dropna(subset=["strength_score", "ret_20", "volume_ratio", "rsi14"]).reset_index(drop=True)
-    if len(clean) < 2:
+    if len(clean) < 8:
         raise ValueError("資料不足")
 
     latest = clean.iloc[-1]
@@ -598,6 +788,13 @@ def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") 
         last_signal_date = pd.Timestamp(last_row["date"]).date().isoformat()
         bars_since = int(len(clean) - 1 - last_idx)
 
+    bars_v = _bars_since_latest(clean, "V")
+    bars_a = _bars_since_latest(clean, "A")
+    delta3 = float(latest["strength_score"] - clean.iloc[-4]["strength_score"])
+    delta5 = float(latest["strength_score"] - clean.iloc[-6]["strength_score"])
+    rising_steps = _consecutive_rising_steps(clean["strength_score"])
+    rapid_warming = bool(delta3 >= 10 or delta5 >= 15)
+
     momentum_component = float(np.clip(50 + latest["ret_20"] * 220, 0, 100))
     volume_direction = 1 if latest["ret_1"] >= 0 else -1
     volume_component = float(np.clip(50 + (latest["volume_ratio"] - 1) * 30 * volume_direction, 0, 100))
@@ -610,17 +807,37 @@ def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") 
     )
 
     stats = signal_performance_stats(enriched, horizons=(5,))
+    economics = signal_expectancy_stats(enriched, horizons=(5,))
 
-    def _extract(signal: str) -> tuple[float, int]:
+    def _extract_basic(signal: str) -> tuple[float, int]:
         row = stats[(stats["訊號"] == signal) & (stats["期間"] == "5日")]
         if row.empty:
             return np.nan, 0
         r = row.iloc[0]
         return float(r["勝率"]) if pd.notna(r["勝率"]) else np.nan, int(r["樣本數"])
 
-    v_win, v_n = _extract("V")
-    a_win, a_n = _extract("A")
+    def _extract_econ(signal: str) -> tuple[float, float, float]:
+        row = economics[(economics["訊號"] == signal) & (economics["期間"] == "5日")]
+        if row.empty:
+            return np.nan, np.nan, np.nan
+        r = row.iloc[0]
+        return (
+            float(r["期望方向報酬"]) if pd.notna(r["期望方向報酬"]) else np.nan,
+            float(r["盈虧比"]) if pd.notna(r["盈虧比"]) else np.nan,
+            float(r["Profit Factor"]) if pd.notna(r["Profit Factor"]) else np.nan,
+        )
+
+    v_win, v_n = _extract_basic("V")
+    a_win, a_n = _extract_basic("A")
+    v_exp, v_payoff, v_pf = _extract_econ("V")
+    a_exp, a_payoff, a_pf = _extract_econ("A")
     fresh = str(latest["signal"]) if latest["signal"] in ("V", "A") else "—"
+
+    if pd.notna(bars_v):
+        v_idx = len(clean) - 1 - int(bars_v)
+        v_quality = v_signal_quality(clean, signal_index=v_idx, horizon=5)
+    else:
+        v_quality = {"分數": np.nan, "等級": "—", "歷史樣本": 0, "歷史勝率": np.nan, "歷史期望報酬": np.nan}
 
     return {
         "代號": normalize_stock_id(stock_id),
@@ -630,7 +847,20 @@ def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") 
         "日漲跌%": float((latest["close"] / prev["close"] - 1) * 100) if prev["close"] else np.nan,
         "力道": float(latest["strength_score"]),
         "四色狀態": strength_label(float(latest["strength_score"])),
+        "力道3日變化": delta3,
+        "力道5日變化": delta5,
+        "連續轉強日數": rising_steps,
+        "快速升溫": "是" if rapid_warming else "—",
         "最新資料日V/A": fresh,
+        "近1日新V": "是" if pd.notna(bars_v) and bars_v <= 0 else "—",
+        "近3日新V": "是" if pd.notna(bars_v) and bars_v <= 2 else "—",
+        "近5日新V": "是" if pd.notna(bars_v) and bars_v <= 4 else "—",
+        "近1日新A": "是" if pd.notna(bars_a) and bars_a <= 0 else "—",
+        "近3日新A": "是" if pd.notna(bars_a) and bars_a <= 2 else "—",
+        "近5日新A": "是" if pd.notna(bars_a) and bars_a <= 4 else "—",
+        "最近V距今交易日": int(bars_v) if pd.notna(bars_v) else np.nan,
+        "最近V品質": str(v_quality["等級"]),
+        "V品質分數": float(v_quality["分數"]) if pd.notna(v_quality["分數"]) else np.nan,
         "上次V/A": last_signal,
         "上次訊號日": last_signal_date,
         "距上次訊號交易日": bars_since,
@@ -639,7 +869,13 @@ def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") 
         "量比": float(latest["volume_ratio"]),
         "V後5日勝率%": float(v_win * 100) if pd.notna(v_win) else np.nan,
         "V樣本": int(v_n),
+        "V後5日期望報酬%": float(v_exp * 100) if pd.notna(v_exp) else np.nan,
+        "V盈虧比": v_payoff,
+        "V Profit Factor": v_pf,
         "A後5日勝率%": float(a_win * 100) if pd.notna(a_win) else np.nan,
         "A樣本": int(a_n),
+        "A後5日期望報酬%": float(a_exp * 100) if pd.notna(a_exp) else np.nan,
+        "A盈虧比": a_payoff,
+        "A Profit Factor": a_pf,
         "技術排名分數": float(rank_score),
     }
