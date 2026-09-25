@@ -35,7 +35,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v6",
+    page_title="免費台股 AI 多空分析 v7",
     page_icon="📈",
     layout="wide",
 )
@@ -85,6 +85,32 @@ def load_forward_log(path_text: str = "data/forward_signals.csv") -> pd.DataFram
     if "stock_id" in table.columns:
         table["stock_id"] = table["stock_id"].astype(str).str.replace(r"\.0$", "", regex=True)
     return table
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_notification_log(path_text: str = "data/notification_events.csv") -> pd.DataFrame:
+    path = Path(path_text)
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        table = pd.read_csv(path, dtype={"stock_id": str, "event_id": str})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+    if "data_date" in table.columns:
+        table["data_date"] = pd.to_datetime(table["data_date"], errors="coerce")
+    if "created_at" in table.columns:
+        table["created_at"] = pd.to_datetime(table["created_at"], errors="coerce")
+    return table
+
+
+def load_small_csv(path_text: str) -> pd.DataFrame:
+    path = Path(path_text)
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, dtype=str).fillna("")
+    except Exception:
+        return pd.DataFrame()
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(stock_id: str, years: int, source: str, token: str):
@@ -312,8 +338,8 @@ if "watchlist_text" not in st.session_state:
 
 secret_finmind_token = get_streamlit_secret("FINMIND_TOKEN")
 
-st.title("📈 免費台股 AI 多空分析系統 v6")
-st.caption("前向驗證｜每日自動快照｜策略研究實驗室｜每日訊號中心｜V 品質｜Walk-forward")
+st.title("📈 免費台股 AI 多空分析系統 v7")
+st.caption("通知中心｜前向驗證｜每日自動快照｜策略研究實驗室｜每日訊號中心｜Walk-forward")
 
 with st.sidebar:
     st.header("個股分析設定")
@@ -346,7 +372,7 @@ with st.sidebar:
         st.session_state["one_way_cost_pct"] = one_way_cost_pct
 
     st.divider()
-    st.caption("v6 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
+    st.caption("v7 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
@@ -406,8 +432,8 @@ elif prob <= 0.40 and score <= 40:
 else:
     st.info("技術力道與模型機率目前沒有形成強烈同向，可視為中性或分歧。")
 
-summary_tab, strength_tab, signal_tab, strategy_tab, model_tab, daily_tab, screener_tab, forward_tab, data_tab = st.tabs(
-    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "資料"]
+summary_tab, strength_tab, signal_tab, strategy_tab, model_tab, daily_tab, screener_tab, forward_tab, notification_tab, data_tab = st.tabs(
+    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "通知中心", "資料"]
 )
 
 with summary_tab:
@@ -420,7 +446,7 @@ with summary_tab:
 
 with strength_tab:
     st.plotly_chart(strength_candle_chart(df), use_container_width=True)
-    st.caption("v6 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
+    st.caption("v7 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
     st.caption("四色力道、翻轉線與 V/A 規則都是本專案自行設計，不是參考網站的專有公式。")
 
 
@@ -500,7 +526,7 @@ with signal_tab:
         st.download_button(
             "下載 V/A 歷史紀錄 CSV",
             log.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{stock_id}_va_history_v6.csv",
+            file_name=f"{stock_id}_va_history_v7.csv",
             mime="text/csv",
         )
     st.caption("樣本數少時勝率容易大幅波動；請同時看樣本數、不同期間與 walk-forward 結果，不要只看單一百分比。")
@@ -632,7 +658,7 @@ with strategy_tab:
             st.download_button(
                 "下載策略交易紀錄 CSV",
                 trade_show.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"{stock_id}_strategy_lab_v6.csv",
+                file_name=f"{stock_id}_strategy_lab_v7.csv",
                 mime="text/csv",
             )
 
@@ -665,7 +691,7 @@ with strategy_tab:
                 compare_df[c] = pd.to_numeric(compare_df[c], errors="coerce").round(2)
             st.dataframe(compare_df, use_container_width=True, hide_index=True)
 
-    with st.expander("v6 策略回測規則與限制"):
+    with st.expander("v7 策略回測規則與限制"):
         st.markdown(
             "- **進場**：V 訊號當天收盤後才知道，因此下一交易日開盤進場，避免偷看未來。\n"
             "- **篩選**：品質、力道、量比、20 日動能都只使用 V 訊號當天已知資料。\n"
@@ -705,7 +731,7 @@ with model_tab:
 
 with daily_tab:
     st.markdown("#### 每日訊號中心 / 我的自選股")
-    st.caption("v6 把自選股掃描升級成訊號工作台：近 1/3/5 日新 V、力道升溫、連續轉強、最近 V 品質，以及勝率以外的期望報酬與盈虧比。每次仍最多掃 25 檔。")
+    st.caption("v7 沿用訊號工作台：近 1/3/5 日新 V、力道升溫、連續轉強、最近 V 品質，以及勝率以外的期望報酬與盈虧比。每次仍最多掃 25 檔。")
 
     up_col, preset_col = st.columns([2, 3])
     with up_col:
@@ -745,7 +771,7 @@ with daily_tab:
         use_container_width=True,
     )
 
-    if st.button("📡 掃描 v6 訊號中心", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
+    if st.button("📡 掃描 v7 訊號中心", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
         progress = st.progress(0, text="開始掃描自選股…")
         rows = []
         errors = []
@@ -827,9 +853,9 @@ with daily_tab:
                 show_daily[c] = pd.to_numeric(show_daily[c], errors="coerce").round(2)
         st.dataframe(show_daily, use_container_width=True, hide_index=True)
         st.download_button(
-            "下載 v6 每日訊號總表 CSV",
+            "下載 v7 每日訊號總表 CSV",
             filtered.to_csv(index=False).encode("utf-8-sig"),
-            file_name="tw_stock_daily_signals_v6.csv",
+            file_name="tw_stock_daily_signals_v7.csv",
             mime="text/csv",
         )
 
@@ -844,7 +870,7 @@ with daily_tab:
                     focus[c] = pd.to_numeric(focus[c], errors="coerce").round(2)
             st.dataframe(focus, use_container_width=True, hide_index=True)
 
-        with st.expander("v6 訊號中心判定規則"):
+        with st.expander("v7 訊號中心判定規則"):
             st.markdown(
                 "- **近 1/3/5 日新 V**：最近一次 V 距最新資料日分別為 0、≤2、≤4 個交易日。\n"
                 "- **連續轉強**：力道分數連續上升至少 2 個交易日。\n"
@@ -870,7 +896,7 @@ with daily_tab:
 
 with screener_tab:
     st.markdown("#### 免費觀察池選股排行")
-    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v6 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
+    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v7 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
     left, right = st.columns([1, 2])
     with left:
         pool = st.selectbox("內建股票池", list(WATCHLISTS.keys()), key="screen_pool")
@@ -912,7 +938,7 @@ with screener_tab:
             show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
         st.dataframe(show, use_container_width=True, hide_index=True)
         csv = show.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v6.csv", "text/csv")
+        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v7.csv", "text/csv")
         st.caption("技術排名分數 = 60% 力道 + 20% 20日動能 + 10% 量價 + 10% 20日區間位置；沒有使用未來資料。")
 
     screen_errors = st.session_state.get("screen_errors", [])
@@ -921,9 +947,9 @@ with screener_tab:
             st.write("\n".join(screen_errors))
 
 with forward_tab:
-    st.markdown("#### v6 前向驗證 / Paper Tracking")
+    st.markdown("#### v7 前向驗證 / Paper Tracking")
     st.caption(
-        "這裡只統計 v6 上線後由每日快照真正記錄下來的預測；歷史回測不會混進來。"
+        "這裡只統計 v6 起由每日快照真正記錄下來的預測；歷史回測不會混進來。"
         "快照欄位建立後不回頭改寫，未來 5/10/20 個交易日到期時才補上實際結果。"
     )
 
@@ -944,7 +970,7 @@ with forward_tab:
         else:
             st.warning("目前個股最新資料距今天超過 3 個日曆日，請先確認資料來源是否更新。")
         st.info(
-            "v6 第一次升級後，請到 GitHub → Actions → Daily forward validation → Run workflow 手動跑一次。"
+            "第一次啟用前向追蹤時，請到 GitHub → Actions → Daily forward validation → Run workflow 手動跑一次。"
             "之後工作流程會在週一到週五台北時間 17:30 自動執行；假日若沒有新交易日，不會重複新增快照。"
         )
     else:
@@ -965,7 +991,7 @@ with forward_tab:
             ).any()
         )
         if current_snapshot_ok:
-            st.success("資料健康檢查：目前個股的最新交易日已存在 v6 前向快照。")
+            st.success("資料健康檢查：目前個股的最新交易日已存在前向快照。")
         elif latest_forward_date and (current_latest_date - latest_forward_date).days <= 3:
             st.info("前向紀錄正在累積中；最新快照日期與目前行情資料接近。若今天剛升級，可先手動執行一次 GitHub Actions。")
         else:
@@ -1067,18 +1093,110 @@ with forward_tab:
         st.download_button(
             "下載完整前向驗證紀錄 CSV",
             forward_log.to_csv(index=False).encode("utf-8-sig"),
-            file_name="forward_signals_v6.csv",
+            file_name="forward_signals_v7.csv",
             mime="text/csv",
         )
 
-    with st.expander("v6 為什麼這樣做？"):
+    with st.expander("前向驗證為什麼這樣做？"):
         st.markdown(
             "- **快照與答案分開**：今天只保存今天已知的價格、訊號、力道與 AI 機率。\n"
             "- **未來到期才補答案**：5/10/20 個交易日後才填入實際報酬，不用未來資料改寫今天的預測。\n"
-            "- **模型版本鎖定**：目前為 `v6-model-1.0`；之後修改演算法會換版本，舊成績不混入。\n"
+            "- **模型版本鎖定**：目前模型仍為 `v6-model-1.0`（v7 未修改預測演算法）；之後修改演算法會換版本，舊成績不混入。\n"
             "- **0050 基準**：同期間與 0050 比較，避免只因整體大盤上漲就誤以為訊號特別有效。\n"
             "- **MFE / MAE**：MFE 是訊號後曾出現的最大有利漲幅，MAE 是最大不利跌幅，兩者皆以訊號日收盤為基準。"
         )
+
+
+with notification_tab:
+    st.markdown("#### 🔔 v7 通知中心")
+    st.caption(
+        "GitHub Actions 每日收盤後偵測新 V/A、A 級 V、力道快速升溫，以及你自行登錄研究部位的停損／停利。"
+        "就算沒有設定 Telegram 或 Discord，事件仍會寫進 data/notification_events.csv。"
+    )
+
+    notification_log = load_notification_log()
+    n1, n2, n3, n4 = st.columns(4)
+    n1.metric("通知事件總數", f"{len(notification_log):,}" if not notification_log.empty else "0")
+    if notification_log.empty:
+        n2.metric("最新事件日", "—")
+        n3.metric("Telegram", "未判定")
+        n4.metric("Discord", "未判定")
+        st.info("目前還沒有通知事件。第一次 v7 Actions 執行後，有符合條件的事件才會開始累積。")
+    else:
+        latest_event_date = pd.to_datetime(notification_log["data_date"], errors="coerce").max()
+        n2.metric("最新事件日", latest_event_date.date().isoformat() if pd.notna(latest_event_date) else "—")
+        tg = notification_log.get("telegram_status", pd.Series(dtype=str)).astype(str)
+        dc = notification_log.get("discord_status", pd.Series(dtype=str)).astype(str)
+        n3.metric("Telegram 最近狀態", tg.iloc[-1] if len(tg) else "—")
+        n4.metric("Discord 最近狀態", dc.iloc[-1] if len(dc) else "—")
+
+        event_names = {
+            "A_GRADE_V": "A 級新 V",
+            "NEW_V": "新 V",
+            "NEW_A": "新 A",
+            "RAPID_WARMING": "力道快速升溫",
+            "FORWARD_5D_COMPLETE": "5 日前向結果完成",
+            "POSITION_STOP": "研究部位停損",
+            "POSITION_TAKE": "研究部位停利",
+        }
+        event_types = [str(x) for x in notification_log.get("event_type", pd.Series(dtype=str)).dropna().unique().tolist()]
+        selected_types = st.multiselect(
+            "篩選事件類型",
+            event_types,
+            default=event_types,
+            format_func=lambda x: event_names.get(x, x),
+        )
+        view = notification_log.copy()
+        if selected_types:
+            view = view[view["event_type"].astype(str).isin(selected_types)]
+        view = view.sort_values(["data_date", "created_at"], ascending=False).head(200)
+        show_cols = ["data_date", "stock_id", "stock_name", "event_type", "title", "message", "telegram_status", "discord_status"]
+        view = view[[c for c in show_cols if c in view.columns]].rename(columns={
+            "data_date": "事件日", "stock_id": "代號", "stock_name": "名稱", "event_type": "事件類型",
+            "title": "標題", "message": "內容", "telegram_status": "Telegram", "discord_status": "Discord",
+        })
+        st.dataframe(view, use_container_width=True, hide_index=True)
+        st.download_button(
+            "下載通知事件 CSV",
+            notification_log.to_csv(index=False).encode("utf-8-sig"),
+            file_name="notification_events_v7.csv",
+            mime="text/csv",
+        )
+
+    st.markdown("##### 目前通知規則")
+    settings_table = load_small_csv("notification_settings.csv")
+    if settings_table.empty:
+        st.warning("找不到 notification_settings.csv。GitHub Actions 仍可執行，但會使用程式預設值。")
+    else:
+        rules = settings_table.iloc[0]
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("新 V / A", "啟用" if str(rules.get("notify_new_v", "1")) == "1" and str(rules.get("notify_new_a", "1")) == "1" else "部分/停用")
+        r2.metric("A 級 V", "啟用" if str(rules.get("notify_a_grade_v", "1")) == "1" else "停用")
+        r3.metric("快速升溫", f"3日 +{rules.get('rapid_3d_threshold', '10')} / 5日 +{rules.get('rapid_5d_threshold', '15')}")
+        r4.metric("停損/停利", "啟用" if str(rules.get("notify_stop_take", "1")) == "1" else "停用")
+        with st.expander("查看 notification_settings.csv 原始設定"):
+            st.dataframe(settings_table, use_container_width=True, hide_index=True)
+
+    st.markdown("##### 研究部位停損／停利")
+    positions_table = load_small_csv("paper_positions.csv")
+    if positions_table.empty:
+        st.info(
+            "目前沒有研究部位。若要啟用，可在 GitHub 編輯 paper_positions.csv。"
+            "這是每日收盤後用日 K 高低價檢查的研究提醒，不是盤中即時交易警報。"
+        )
+    else:
+        st.dataframe(positions_table, use_container_width=True, hide_index=True)
+        st.caption("同一天同時碰到停損與停利時，v7 採較保守的『停損先發生』假設。")
+
+    with st.expander("如何開啟免費 Telegram / Discord 推播"):
+        st.markdown(
+            "**Telegram**：在 GitHub Repository → Settings → Secrets and variables → Actions，加入 "
+            "`TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID`。\n\n"
+            "**Discord**：加入 `DISCORD_WEBHOOK_URL`。\n\n"
+            "完成後到 GitHub → Actions → **Test notifications** → Run workflow。"
+            "至少一個管道設定正確時，會收到 v7 測試訊息。Secrets 不會寫進 CSV 或顯示在這個網站。"
+        )
+
 
 with data_tab:
     show = df[[
@@ -1087,7 +1205,7 @@ with data_tab:
     ]].sort_values("date", ascending=False)
     st.dataframe(show, use_container_width=True, hide_index=True)
     csv = show.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v6.csv", mime="text/csv")
+    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v7.csv", mime="text/csv")
 
 st.divider()
 st.markdown(

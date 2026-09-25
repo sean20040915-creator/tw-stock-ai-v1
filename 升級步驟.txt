@@ -1,94 +1,123 @@
-免費台股 AI 多空分析系統 v5 → v6
+免費台股 AI 多空分析系統 v6 → v7
 ====================================
 
-這次的重點：前向驗證 + 每日 GitHub Actions 自動快照。
+v7 重點：通知中心 + Telegram/Discord 選用推播 + 研究部位停損/停利提醒。
 原本 Streamlit 網址不用換。
+模型沒有改，所以 MODEL_VERSION 仍是 v6-model-1.0，前向成績會繼續累積。
 
-【步驟 1】
-下載並解壓縮 tw_stock_ai_v6.zip
-
-【步驟 2】
-打開你原本的 GitHub repository：tw-stock-ai-v1（或你實際使用的 repository）
-
-【步驟 3】
-把 v6 內容上傳到 repository 根目錄。
-這次需要包含：
-
-1. streamlit_app.py
-2. stock_engine.py
-3. requirements.txt
-4. forward_tracker.py
-5. requirements-tracker.txt
-6. forward_watchlist.csv
-7. data/forward_signals.csv
-8. .github/workflows/forward_tracker.yml
-
-README.md、升級步驟.txt 可一起更新。
-
-注意：
-.github/workflows/forward_tracker.yml 的路徑一定要正確。
-如果 GitHub 上看不到 .github/workflows/forward_tracker.yml，Actions 不會自動出現。
-
-【步驟 4】
-按 Commit changes。
-
-【步驟 5】
-回到 Streamlit 網站重新整理。
-成功後應顯示：
-「免費台股 AI 多空分析系統 v6」
-並多一個「前向驗證」頁籤。
-
-【步驟 6：第一次手動啟動前向追蹤】
-到 GitHub repository → Actions
-→ 左邊選 Daily forward validation
-→ Run workflow
-→ 再按綠色 Run workflow
-
-成功後，GitHub 會自動更新：
+【最重要：先保護 v6 資料】
+不要覆蓋 GitHub 現有的：
 data/forward_signals.csv
 
-第一次只會留下最新交易日快照。
-5 / 10 / 20 日結果要等未來真的走完才會逐步填入。
+如果你已修改自己的追蹤股票，也不要覆蓋：
+forward_watchlist.csv
 
-【如果 Actions 最後 git push 顯示 403 / permission denied】
-到：
-Repository → Settings → Actions → General
-→ Workflow permissions
-→ 選 Read and write permissions
-→ Save
-然後回 Actions 再 Run workflow 一次。
+建議直接使用 tw_stock_ai_v7_upgrade.zip。
+這個更新包刻意不放上述兩個檔案。
 
-【每日自動時間】
-週一到週五，台北時間 17:30。
-遇到台股休市，若最新交易日已經存在，就不會重複新增。
+【步驟 1】
+下載並解壓縮 tw_stock_ai_v7_upgrade.zip
 
-【調整自動追蹤股票】
-GitHub 打開 forward_watchlist.csv → Edit（鉛筆）
-格式：
-stock_id,stock_name
-2330,台積電
-2317,鴻海
+【步驟 2】
+到原本 GitHub repository。
+把更新包內容上傳並覆蓋原檔。
 
-建議先用 10 檔，最多前 25 檔。
+主要更新：
+1. streamlit_app.py
+2. forward_tracker.py
+3. .github/workflows/forward_tracker.yml
+4. README.md
+5. 升級步驟.txt
 
-【FinMind Token：選用】
-沒有 token 也可以先跑。
-若要讓 GitHub Actions 使用 token：
+主要新增：
+6. notification_engine.py
+7. test_notification.py
+8. notification_settings.csv
+9. paper_positions.csv
+10. data/notification_events.csv
+11. .github/workflows/test_notification.yml
+
+注意：
+.github 是隱藏資料夾。
+在 GitHub 網頁確認必須看到：
+.github/workflows/forward_tracker.yml
+.github/workflows/test_notification.yml
+
+【步驟 3】
+Commit changes。
+
+【步驟 4】
+回 Streamlit 重新整理。
+應看到：
+「免費台股 AI 多空分析系統 v7」
+以及新的「通知中心」頁籤。
+
+【步驟 5：先測網站內通知紀錄】
+到 GitHub → Actions → Daily forward validation → Run workflow。
+
+跑完後看：
+data/notification_events.csv
+
+如果當天有新 V/A、A 級 V、快速升溫或研究部位觸發條件，就會新增通知事件。
+如果當天沒有任何事件，CSV 沒新增是正常的。
+
+【Telegram 推播：選用】
+先在 Telegram 用官方 @BotFather 建 bot 並取得 Bot Token。
+對 bot 按 Start 並傳一則訊息，再利用 Bot API getUpdates 找到 chat.id。
+
+到 GitHub：
 Repository → Settings → Secrets and variables → Actions
-→ New repository secret
-Name：FINMIND_TOKEN
-Value：你的 FinMind token
+新增：
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
 
-不要把 token 寫進 forward_watchlist.csv、程式碼或 README。
+不要把 token 貼進 GitHub 程式碼或 CSV。
 
-【第一次測試完成標準】
-1. v1～v5 舊功能正常。
-2. 前向驗證頁可打開。
-3. Actions 手動執行成功。
-4. data/forward_signals.csv 有資料。
-5. 前向驗證頁顯示最新快照。
-6. 5 個交易日後 ret_5d 開始出現正式結果。
+【Discord 推播：選用】
+Discord Server Settings → Integrations → Webhooks
+建立 webhook → Copy Webhook URL。
+
+GitHub Actions Secret 新增：
+DISCORD_WEBHOOK_URL
+
+【測試 Telegram / Discord】
+設定至少一個通知管道後：
+GitHub → Actions → Test notifications → Run workflow
+
+成功後會收到：
+「台股 AI v7 測試通知成功」
+
+如果完全沒有設定通知 Secrets，Test notifications 會故意失敗並提示尚未設定。
+
+【研究部位停損 / 停利】
+編輯 GitHub 的 paper_positions.csv，例如：
+
+position_id,stock_id,label,entry_date,entry_price,stop_loss_pct,take_profit_pct,enabled
+p001,2330,2330研究部位,2026-09-25,1250,6,12,1
+
+這只是收盤後日 K 研究提醒，不是盤中即時警報。
+同一天同時碰到停損與停利時，v7 保守採停損先發生。
+
+【通知規則】
+notification_settings.csv 預設：
+- 新 V：開
+- 新 A：開
+- A 級 V：開
+- 3 日力道 +10 / 5 日 +15：開
+- 5 日前向成熟結果通知：關
+- 研究部位停損停利：開
+
+要關閉某個布林規則，把 1 改成 0 即可。
+
+【v7 完成標準】
+1. v1～v6 舊功能仍正常。
+2. 前向驗證資料沒有被清空。
+3. 網站顯示 v7。
+4. 通知中心可打開。
+5. GitHub Actions 有兩個 workflow。
+6. Daily forward validation 能成功。
+7. data/notification_events.csv 可正常保留事件。
+8. 如果設定推播，Test notifications 能收到測試訊息。
 
 最重要：
-v6 不要回填過去日期來製造「前向成績」。
-前向驗證最有價值的地方，就是從真正上線的這一天開始誠實累積。
+v7 的通知代表「研究條件被觸發」，不是交易建議，也不是自動下單。
