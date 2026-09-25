@@ -1,53 +1,94 @@
-免費台股 AI 多空分析系統 v4 → v5
+免費台股 AI 多空分析系統 v5 → v6
 ====================================
 
-你不需要重建 Streamlit 網站，也不用換網址。
+這次的重點：前向驗證 + 每日 GitHub Actions 自動快照。
+原本 Streamlit 網址不用換。
 
-步驟 1
-下載並解壓縮 tw_stock_ai_v5.zip
+【步驟 1】
+下載並解壓縮 tw_stock_ai_v6.zip
 
-步驟 2
+【步驟 2】
 打開你原本的 GitHub repository：tw-stock-ai-v1（或你實際使用的 repository）
 
-步驟 3
-把下面 3 個檔案上傳並覆蓋原檔：
+【步驟 3】
+把 v6 內容上傳到 repository 根目錄。
+這次需要包含：
 
 1. streamlit_app.py
 2. stock_engine.py
 3. requirements.txt
+4. forward_tracker.py
+5. requirements-tracker.txt
+6. forward_watchlist.csv
+7. data/forward_signals.csv
+8. .github/workflows/forward_tracker.yml
 
-README.md 可一起更新，但不影響網站執行。
+README.md、升級步驟.txt 可一起更新。
 
-步驟 4
-GitHub 按 Commit changes。
+注意：
+.github/workflows/forward_tracker.yml 的路徑一定要正確。
+如果 GitHub 上看不到 .github/workflows/forward_tracker.yml，Actions 不會自動出現。
 
-步驟 5
-回到原本的 Streamlit 網址並重新整理。
+【步驟 4】
+按 Commit changes。
 
-成功後網站標題應顯示：
-「免費台股 AI 多空分析系統 v5」
+【步驟 5】
+回到 Streamlit 網站重新整理。
+成功後應顯示：
+「免費台股 AI 多空分析系統 v6」
+並多一個「前向驗證」頁籤。
 
-新增頁籤：
-「策略研究實驗室」
+【步驟 6：第一次手動啟動前向追蹤】
+到 GitHub repository → Actions
+→ 左邊選 Daily forward validation
+→ Run workflow
+→ 再按綠色 Run workflow
 
-建議測試：
-1. 查 2330。
-2. 歷史資料先選 5 年。
-3. 打開「策略研究實驗室」。
-4. 先用預設 A/B 級、力道 55、量比 1.0、持有 10 日、停損 6%、停利 12%。
-5. 按「執行策略回測」。
-6. 看交易數、勝率、期望淨報酬、盈虧比、Profit Factor、累積報酬、最大回撤。
-7. 看資金曲線與逐筆交易紀錄。
-8. 看下方 5 / 10 / 20 日快速比較。
-9. 下載策略交易紀錄 CSV。
+成功後，GitHub 會自動更新：
+data/forward_signals.csv
 
-若顯示沒有交易：
-- 把 A/B 改成 A/B/C；或
-- 降低最低量比；或
-- 把歷史資料期間改成 5 年 / 8 年。
+第一次只會留下最新交易日快照。
+5 / 10 / 20 日結果要等未來真的走完才會逐步填入。
 
-重要：
-V 訊號在收盤後才知道，所以 v5 一律以下一交易日開盤進場。
-同一天同時碰到停損、停利時，採保守假設：先算停損。
-最近尚未走滿持有期的 V，不納入已完成績效。
-歷史回測不代表未來績效。
+【如果 Actions 最後 git push 顯示 403 / permission denied】
+到：
+Repository → Settings → Actions → General
+→ Workflow permissions
+→ 選 Read and write permissions
+→ Save
+然後回 Actions 再 Run workflow 一次。
+
+【每日自動時間】
+週一到週五，台北時間 17:30。
+遇到台股休市，若最新交易日已經存在，就不會重複新增。
+
+【調整自動追蹤股票】
+GitHub 打開 forward_watchlist.csv → Edit（鉛筆）
+格式：
+stock_id,stock_name
+2330,台積電
+2317,鴻海
+
+建議先用 10 檔，最多前 25 檔。
+
+【FinMind Token：選用】
+沒有 token 也可以先跑。
+若要讓 GitHub Actions 使用 token：
+Repository → Settings → Secrets and variables → Actions
+→ New repository secret
+Name：FINMIND_TOKEN
+Value：你的 FinMind token
+
+不要把 token 寫進 forward_watchlist.csv、程式碼或 README。
+
+【第一次測試完成標準】
+1. v1～v5 舊功能正常。
+2. 前向驗證頁可打開。
+3. Actions 手動執行成功。
+4. data/forward_signals.csv 有資料。
+5. 前向驗證頁顯示最新快照。
+6. 5 個交易日後 ret_5d 開始出現正式結果。
+
+最重要：
+v6 不要回填過去日期來製造「前向成績」。
+前向驗證最有價值的地方，就是從真正上線的這一天開始誠實累積。

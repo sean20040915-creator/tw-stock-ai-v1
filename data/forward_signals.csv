@@ -1,0 +1,1 @@
+﻿recorded_at,data_date,stock_id,stock_name,model_version,source,close,signal,v_grade,v_quality_score,strength_score,strength_band,rsi14,volume_ratio,ret_20_pct,ai_up_5d_prob,model_train_rows,ret_5d,ret_10d,ret_20d,mfe_5d,mae_5d,mfe_10d,mae_10d,mfe_20d,mae_20d,benchmark_5d,benchmark_10d,benchmark_20d,excess_5d,excess_10d,excess_20d,evaluated_5d_at,evaluated_10d_at,evaluated_20d_at

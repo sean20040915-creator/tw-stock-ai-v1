@@ -1137,3 +1137,290 @@ def strategy_lab_backtest(
     }
     trades = trades.drop(columns=["_entry_idx", "_exit_idx"], errors="ignore")
     return trades, equity, stats
+
+# -----------------------------------------------------------------------------
+# v6 forward validation / paper tracking
+# -----------------------------------------------------------------------------
+MODEL_VERSION = "v6-model-1.0"
+FORWARD_HORIZONS = (5, 10, 20)
+
+
+def latest_prediction_probability(df: pd.DataFrame, min_train: int = 260) -> tuple[float, int]:
+    """Fit only on samples whose 5-day outcome is already known, then score latest row.
+
+    This is intentionally lighter than the full walk-forward report and is used by the
+    scheduled forward tracker. The recorded probability is frozen in the snapshot.
+    """
+    work = df.copy()
+    if "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+    work["target_ret_5"] = work["close"].shift(-5) / work["close"] - 1
+    work["target"] = np.where(
+        work["target_ret_5"].notna(),
+        (work["target_ret_5"] > 0).astype(int),
+        np.nan,
+    )
+
+    train = work.dropna(subset=FEATURES + ["target"]).copy()
+    latest = work.dropna(subset=FEATURES).tail(1)
+    if len(train) < int(min_train) or latest.empty:
+        return np.nan, int(len(train))
+    y = train["target"].astype(int)
+    if y.nunique() < 2:
+        return float(y.iloc[-1]), int(len(train))
+
+    model = _new_model(220)
+    model.fit(train[FEATURES], y)
+    probability = float(model.predict_proba(latest[FEATURES])[:, 1][0])
+    return probability, int(len(train))
+
+
+def forward_snapshot_row(
+    stock_id: str,
+    df: pd.DataFrame,
+    stock_name: str = "",
+    source: str = "",
+    model_version: str = MODEL_VERSION,
+    recorded_at: str | None = None,
+) -> dict:
+    """Create an immutable-as-of-now daily snapshot for forward validation."""
+    work = df.copy()
+    if "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+    clean = work.dropna(subset=FEATURES + ["close", "rsi14", "volume_ratio", "strength_score"])
+    if clean.empty:
+        raise ValueError("資料不足，無法建立前向驗證快照。")
+
+    latest_idx = int(clean.index[-1])
+    latest = work.loc[latest_idx]
+    probability, train_rows = latest_prediction_probability(work)
+    signal = str(latest.get("signal", "")) if str(latest.get("signal", "")) in ("V", "A") else ""
+
+    quality = {
+        "分數": np.nan,
+        "等級": "—",
+        "歷史樣本": 0,
+        "歷史勝率": np.nan,
+        "歷史期望報酬": np.nan,
+    }
+    if signal == "V":
+        quality = v_signal_quality(work, signal_index=latest_idx, horizon=5)
+
+    if recorded_at is None:
+        recorded_at = pd.Timestamp.now(tz="Asia/Taipei").isoformat()
+
+    return {
+        "recorded_at": recorded_at,
+        "data_date": pd.Timestamp(latest["date"]).date().isoformat(),
+        "stock_id": normalize_stock_id(stock_id),
+        "stock_name": stock_name,
+        "model_version": model_version,
+        "source": source,
+        "close": float(latest["close"]),
+        "signal": signal,
+        "v_grade": str(quality.get("等級", "—")) if signal == "V" else "—",
+        "v_quality_score": float(quality.get("分數")) if signal == "V" and pd.notna(quality.get("分數")) else np.nan,
+        "strength_score": float(latest["strength_score"]),
+        "strength_band": strength_label(float(latest["strength_score"])),
+        "rsi14": float(latest["rsi14"]),
+        "volume_ratio": float(latest["volume_ratio"]),
+        "ret_20_pct": float(latest["ret_20"] * 100) if pd.notna(latest["ret_20"]) else np.nan,
+        "ai_up_5d_prob": probability,
+        "model_train_rows": train_rows,
+        # Future-result fields are intentionally empty at snapshot time.
+        "ret_5d": np.nan,
+        "ret_10d": np.nan,
+        "ret_20d": np.nan,
+        "mfe_5d": np.nan,
+        "mae_5d": np.nan,
+        "mfe_10d": np.nan,
+        "mae_10d": np.nan,
+        "mfe_20d": np.nan,
+        "mae_20d": np.nan,
+        "benchmark_5d": np.nan,
+        "benchmark_10d": np.nan,
+        "benchmark_20d": np.nan,
+        "excess_5d": np.nan,
+        "excess_10d": np.nan,
+        "excess_20d": np.nan,
+        "evaluated_5d_at": "",
+        "evaluated_10d_at": "",
+        "evaluated_20d_at": "",
+    }
+
+
+def _date_position(work: pd.DataFrame, date_value: str | pd.Timestamp) -> int | None:
+    dates = pd.to_datetime(work["date"], errors="coerce").dt.normalize()
+    target = pd.Timestamp(date_value).normalize()
+    hits = np.flatnonzero(dates.eq(target).to_numpy())
+    return int(hits[-1]) if len(hits) else None
+
+
+def update_forward_outcomes(
+    log: pd.DataFrame,
+    stock_id: str,
+    df: pd.DataFrame,
+    benchmark_df: pd.DataFrame | None = None,
+    horizons: tuple[int, ...] = FORWARD_HORIZONS,
+) -> pd.DataFrame:
+    """Fill only previously-empty future outcome cells; snapshot inputs stay untouched."""
+    if log.empty:
+        return log.copy()
+
+    out = log.copy()
+    work = df.copy()
+    if "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+
+    benchmark = None
+    if benchmark_df is not None and not benchmark_df.empty:
+        benchmark = benchmark_df.sort_values("date").reset_index(drop=True).copy()
+
+    # CSV readers can infer all-empty evaluated_* columns as float; force object before
+    # later writing ISO date strings so future pandas versions do not reject the assignment.
+    for horizon in horizons:
+        eval_col = f"evaluated_{int(horizon)}d_at"
+        if eval_col in out.columns:
+            out[eval_col] = out[eval_col].astype("object")
+
+    sid = normalize_stock_id(stock_id)
+    ticker_rows = out.index[out["stock_id"].astype(str).eq(sid)].tolist()
+    for row_idx in ticker_rows:
+        base_pos = _date_position(work, out.at[row_idx, "data_date"])
+        if base_pos is None:
+            continue
+        base_close = float(work.loc[base_pos, "close"])
+        if not np.isfinite(base_close) or base_close <= 0:
+            continue
+
+        benchmark_pos = None
+        benchmark_base = None
+        if benchmark is not None:
+            benchmark_pos = _date_position(benchmark, out.at[row_idx, "data_date"])
+            if benchmark_pos is not None:
+                benchmark_base = float(benchmark.loc[benchmark_pos, "close"])
+
+        for horizon in horizons:
+            ret_col = f"ret_{horizon}d"
+            mfe_col = f"mfe_{horizon}d"
+            mae_col = f"mae_{horizon}d"
+            bench_col = f"benchmark_{horizon}d"
+            excess_col = f"excess_{horizon}d"
+            eval_col = f"evaluated_{horizon}d_at"
+
+            # Never rewrite an already-realized outcome. This preserves the first
+            # forward observation even if a data vendor later revises history.
+            existing = pd.to_numeric(pd.Series([out.at[row_idx, ret_col]]), errors="coerce").iloc[0]
+            if pd.notna(existing):
+                continue
+
+            end_pos = base_pos + int(horizon)
+            if end_pos >= len(work):
+                continue
+
+            future = work.iloc[base_pos + 1 : end_pos + 1]
+            end_close = float(work.loc[end_pos, "close"])
+            realized = end_close / base_close - 1
+            mfe = float(future["high"].max() / base_close - 1) if not future.empty else np.nan
+            mae = float(future["low"].min() / base_close - 1) if not future.empty else np.nan
+
+            out.at[row_idx, ret_col] = realized
+            out.at[row_idx, mfe_col] = mfe
+            out.at[row_idx, mae_col] = mae
+            out.at[row_idx, eval_col] = pd.Timestamp(work.loc[end_pos, "date"]).date().isoformat()
+
+            if benchmark is not None and benchmark_pos is not None and benchmark_base and benchmark_base > 0:
+                benchmark_end = benchmark_pos + int(horizon)
+                if benchmark_end < len(benchmark):
+                    benchmark_ret = float(benchmark.loc[benchmark_end, "close"] / benchmark_base - 1)
+                    out.at[row_idx, bench_col] = benchmark_ret
+                    out.at[row_idx, excess_col] = realized - benchmark_ret
+
+    return out
+
+
+def forward_performance_summary(
+    log: pd.DataFrame,
+    signal: str = "V",
+    model_version: str | None = None,
+    horizons: tuple[int, ...] = FORWARD_HORIZONS,
+) -> pd.DataFrame:
+    """Summarize immutable forward snapshots after outcomes become available."""
+    if log is None or log.empty:
+        return pd.DataFrame()
+    work = log.copy()
+    if model_version:
+        work = work[work["model_version"].astype(str).eq(str(model_version))]
+    if signal in ("V", "A"):
+        work = work[work["signal"].astype(str).eq(signal)]
+    if work.empty:
+        return pd.DataFrame()
+
+    direction = 1.0 if signal != "A" else -1.0
+    rows = []
+    for horizon in horizons:
+        ret_col = f"ret_{horizon}d"
+        bench_col = f"benchmark_{horizon}d"
+        excess_col = f"excess_{horizon}d"
+        mfe_col = f"mfe_{horizon}d"
+        mae_col = f"mae_{horizon}d"
+        if ret_col not in work.columns:
+            continue
+        ret = pd.to_numeric(work[ret_col], errors="coerce")
+        mask = ret.notna()
+        if not mask.any():
+            rows.append({
+                "期間": f"{horizon}日", "樣本數": 0, "方向勝率": np.nan,
+                "平均方向報酬": np.nan, "中位方向報酬": np.nan,
+                "平均相對0050超額": np.nan, "平均MFE": np.nan, "平均MAE": np.nan,
+            })
+            continue
+        directed = ret[mask] * direction
+        excess = pd.to_numeric(work.loc[mask, excess_col], errors="coerce") * direction if excess_col in work else pd.Series(dtype=float)
+        mfe = pd.to_numeric(work.loc[mask, mfe_col], errors="coerce") if mfe_col in work else pd.Series(dtype=float)
+        mae = pd.to_numeric(work.loc[mask, mae_col], errors="coerce") if mae_col in work else pd.Series(dtype=float)
+        rows.append({
+            "期間": f"{horizon}日",
+            "樣本數": int(mask.sum()),
+            "方向勝率": float((directed > 0).mean()),
+            "平均方向報酬": float(directed.mean()),
+            "中位方向報酬": float(directed.median()),
+            "平均相對0050超額": float(excess.mean()) if len(excess.dropna()) else np.nan,
+            "平均MFE": float(mfe.mean()) if len(mfe.dropna()) else np.nan,
+            "平均MAE": float(mae.mean()) if len(mae.dropna()) else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+def forward_ai_calibration(log: pd.DataFrame, model_version: str | None = None) -> pd.DataFrame:
+    """Compare recorded 5-day up probabilities with later realized 5-day outcomes."""
+    if log is None or log.empty:
+        return pd.DataFrame()
+    work = log.copy()
+    if model_version:
+        work = work[work["model_version"].astype(str).eq(str(model_version))]
+    work["prob"] = pd.to_numeric(work.get("ai_up_5d_prob"), errors="coerce")
+    work["ret"] = pd.to_numeric(work.get("ret_5d"), errors="coerce")
+    work = work.dropna(subset=["prob", "ret"])
+    if work.empty:
+        return pd.DataFrame()
+
+    bins = [-0.001, 0.40, 0.50, 0.60, 0.70, 1.001]
+    labels = ["<40%", "40–49%", "50–59%", "60–69%", "≥70%"]
+    work["機率區間"] = pd.cut(work["prob"], bins=bins, labels=labels, include_lowest=True, right=False)
+    grouped = work.groupby("機率區間", observed=False)
+    rows = []
+    for label, group in grouped:
+        if group.empty:
+            continue
+        rows.append({
+            "AI機率區間": str(label),
+            "樣本數": int(len(group)),
+            "平均預測機率": float(group["prob"].mean()),
+            "實際5日上漲率": float((group["ret"] > 0).mean()),
+            "平均5日報酬": float(group["ret"].mean()),
+        })
+    return pd.DataFrame(rows)

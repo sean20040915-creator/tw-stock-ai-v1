@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from io import BytesIO
 from typing import Iterable
 
@@ -11,11 +12,14 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from stock_engine import (
+    MODEL_VERSION,
     add_indicators,
     apply_transaction_cost,
     backtest_stats,
     fetch_stock_data,
     fetch_stock_info,
+    forward_ai_calibration,
+    forward_performance_summary,
     normalize_stock_id,
     recent_support_resistance,
     recent_signal_log,
@@ -31,7 +35,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v5",
+    page_title="免費台股 AI 多空分析 v6",
     page_icon="📈",
     layout="wide",
 )
@@ -57,6 +61,30 @@ KNOWN_NAMES = {
     "00922": "國泰台灣領袖50", "00923": "群益台ESG低碳50",
 }
 
+
+
+
+def get_streamlit_secret(name: str) -> str:
+    try:
+        return str(st.secrets.get(name, ""))
+    except Exception:
+        return ""
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_forward_log(path_text: str = "data/forward_signals.csv") -> pd.DataFrame:
+    path = Path(path_text)
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        table = pd.read_csv(path, dtype={"stock_id": str})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+    if "data_date" in table.columns:
+        table["data_date"] = pd.to_datetime(table["data_date"], errors="coerce")
+    if "stock_id" in table.columns:
+        table["stock_id"] = table["stock_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    return table
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(stock_id: str, years: int, source: str, token: str):
@@ -282,8 +310,10 @@ def watchlist_csv_bytes(tickers: list[str], names: dict[str, str]) -> bytes:
 if "watchlist_text" not in st.session_state:
     st.session_state["watchlist_text"] = ", ".join(WATCHLISTS["大型權值"][:10])
 
-st.title("📈 免費台股 AI 多空分析系統 v5")
-st.caption("策略研究實驗室｜每日訊號中心｜V 品質｜停損停利回測｜期望報酬｜Walk-forward")
+secret_finmind_token = get_streamlit_secret("FINMIND_TOKEN")
+
+st.title("📈 免費台股 AI 多空分析系統 v6")
+st.caption("前向驗證｜每日自動快照｜策略研究實驗室｜每日訊號中心｜V 品質｜Walk-forward")
 
 with st.sidebar:
     st.header("個股分析設定")
@@ -294,7 +324,7 @@ with st.sidebar:
         saved_source = st.session_state.get("source_label", source_options[0])
         saved_index = source_options.index(saved_source) if saved_source in source_options else 0
         source_label = st.selectbox("資料來源", source_options, index=saved_index)
-        token = st.text_input("FinMind Token（選填）", value=st.session_state.get("finmind_token", ""), type="password",
+        token = st.text_input("FinMind Token（選填）", value=st.session_state.get("finmind_token", secret_finmind_token), type="password",
                               help="不填可用匿名免費額度；token 可提高 FinMind 額度。")
         threshold = st.slider("AI 持有門檻", min_value=0.50, max_value=0.70,
                               value=float(st.session_state.get("threshold", 0.55)), step=0.01,
@@ -316,7 +346,7 @@ with st.sidebar:
         st.session_state["one_way_cost_pct"] = one_way_cost_pct
 
     st.divider()
-    st.caption("v5 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
+    st.caption("v6 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
@@ -376,8 +406,8 @@ elif prob <= 0.40 and score <= 40:
 else:
     st.info("技術力道與模型機率目前沒有形成強烈同向，可視為中性或分歧。")
 
-summary_tab, strength_tab, signal_tab, strategy_tab, model_tab, daily_tab, screener_tab, data_tab = st.tabs(
-    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "資料"]
+summary_tab, strength_tab, signal_tab, strategy_tab, model_tab, daily_tab, screener_tab, forward_tab, data_tab = st.tabs(
+    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "資料"]
 )
 
 with summary_tab:
@@ -390,7 +420,7 @@ with summary_tab:
 
 with strength_tab:
     st.plotly_chart(strength_candle_chart(df), use_container_width=True)
-    st.caption("v5 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
+    st.caption("v6 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
     st.caption("四色力道、翻轉線與 V/A 規則都是本專案自行設計，不是參考網站的專有公式。")
 
 
@@ -470,7 +500,7 @@ with signal_tab:
         st.download_button(
             "下載 V/A 歷史紀錄 CSV",
             log.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{stock_id}_va_history_v5.csv",
+            file_name=f"{stock_id}_va_history_v6.csv",
             mime="text/csv",
         )
     st.caption("樣本數少時勝率容易大幅波動；請同時看樣本數、不同期間與 walk-forward 結果，不要只看單一百分比。")
@@ -519,7 +549,7 @@ with strategy_tab:
                 take_profit_pct=float(lab_take) / 100 if take_enabled else None,
                 one_way_cost=float(one_way_cost),
             )
-            st.session_state["strategy_lab_v5"] = {
+            st.session_state["strategy_lab_v6"] = {
                 "trades": trades,
                 "equity": equity,
                 "stats": lab_stats,
@@ -543,7 +573,7 @@ with strategy_tab:
         except Exception as exc:
             st.error(f"策略回測無法完成：{exc}")
 
-    lab = st.session_state.get("strategy_lab_v5")
+    lab = st.session_state.get("strategy_lab_v6")
     current_data_last_date = pd.Timestamp(df.iloc[-1]["date"]).date().isoformat()
     lab_matches_current_data = (
         isinstance(lab, dict)
@@ -602,7 +632,7 @@ with strategy_tab:
             st.download_button(
                 "下載策略交易紀錄 CSV",
                 trade_show.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"{stock_id}_strategy_lab_v5.csv",
+                file_name=f"{stock_id}_strategy_lab_v6.csv",
                 mime="text/csv",
             )
 
@@ -635,7 +665,7 @@ with strategy_tab:
                 compare_df[c] = pd.to_numeric(compare_df[c], errors="coerce").round(2)
             st.dataframe(compare_df, use_container_width=True, hide_index=True)
 
-    with st.expander("v5 策略回測規則與限制"):
+    with st.expander("v6 策略回測規則與限制"):
         st.markdown(
             "- **進場**：V 訊號當天收盤後才知道，因此下一交易日開盤進場，避免偷看未來。\n"
             "- **篩選**：品質、力道、量比、20 日動能都只使用 V 訊號當天已知資料。\n"
@@ -675,7 +705,7 @@ with model_tab:
 
 with daily_tab:
     st.markdown("#### 每日訊號中心 / 我的自選股")
-    st.caption("v5 把自選股掃描升級成訊號工作台：近 1/3/5 日新 V、力道升溫、連續轉強、最近 V 品質，以及勝率以外的期望報酬與盈虧比。每次仍最多掃 25 檔。")
+    st.caption("v6 把自選股掃描升級成訊號工作台：近 1/3/5 日新 V、力道升溫、連續轉強、最近 V 品質，以及勝率以外的期望報酬與盈虧比。每次仍最多掃 25 檔。")
 
     up_col, preset_col = st.columns([2, 3])
     with up_col:
@@ -715,7 +745,7 @@ with daily_tab:
         use_container_width=True,
     )
 
-    if st.button("📡 掃描 v5 訊號中心", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
+    if st.button("📡 掃描 v6 訊號中心", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
         progress = st.progress(0, text="開始掃描自選股…")
         rows = []
         errors = []
@@ -727,16 +757,16 @@ with daily_tab:
             except Exception as exc:
                 errors.append(f"{ticker}: {exc}")
         progress.progress(1.0, text="掃描完成")
-        st.session_state["daily_signal_result_v5"] = pd.DataFrame(rows)
-        st.session_state["daily_signal_errors_v5"] = errors
+        st.session_state["daily_signal_result_v6"] = pd.DataFrame(rows)
+        st.session_state["daily_signal_errors_v6"] = errors
 
-    daily_result = st.session_state.get("daily_signal_result_v5")
+    daily_result = st.session_state.get("daily_signal_result_v6")
     if isinstance(daily_result, pd.DataFrame) and not daily_result.empty:
         latest_dates = pd.to_datetime(daily_result["資料日"], errors="coerce")
         common_latest = latest_dates.max().date().isoformat() if latest_dates.notna().any() else "—"
         n_v1 = int((daily_result["近1日新V"] == "是").sum())
         n_v3 = int((daily_result["近3日新V"] == "是").sum())
-        n_v5 = int((daily_result["近5日新V"] == "是").sum())
+        n_v6 = int((daily_result["近5日新V"] == "是").sum())
         n_heat = int((daily_result["快速升溫"] == "是").sum())
         n_rising = int((pd.to_numeric(daily_result["連續轉強日數"], errors="coerce") >= 2).sum())
         n_a3 = int((daily_result["近3日新A"] == "是").sum())
@@ -745,7 +775,7 @@ with daily_tab:
         d1.metric("最新資料日", common_latest)
         d2.metric("近 1 日新 V", n_v1)
         d3.metric("近 3 日新 V", n_v3)
-        d4.metric("近 5 日新 V", n_v5)
+        d4.metric("近 5 日新 V", n_v6)
         d5.metric("快速升溫", n_heat)
         d6.metric("近 3 日新 A", n_a3)
 
@@ -754,7 +784,7 @@ with daily_tab:
             "快速篩選",
             ["全部", "近1日新V", "近3日新V", "近5日新V", "快速升溫", "連續轉強", "近3日新A", "強多", "強空"],
             horizontal=True,
-            key="daily_filter_v5",
+            key="daily_filter_v6",
         )
         filtered = daily_result.copy()
         if filter_label in {"近1日新V", "近3日新V", "近5日新V", "近3日新A"}:
@@ -771,7 +801,7 @@ with daily_tab:
         sort_mode = st.selectbox(
             "排序",
             ["V品質分數", "力道3日變化", "力道", "技術排名分數", "V後5日期望報酬%", "V盈虧比", "20日動能%"],
-            key="daily_sort_v5",
+            key="daily_sort_v6",
         )
         filtered = filtered.sort_values(sort_mode, ascending=False, na_position="last").reset_index(drop=True)
 
@@ -797,13 +827,13 @@ with daily_tab:
                 show_daily[c] = pd.to_numeric(show_daily[c], errors="coerce").round(2)
         st.dataframe(show_daily, use_container_width=True, hide_index=True)
         st.download_button(
-            "下載 v5 每日訊號總表 CSV",
+            "下載 v6 每日訊號總表 CSV",
             filtered.to_csv(index=False).encode("utf-8-sig"),
-            file_name="tw_stock_daily_signals_v5.csv",
+            file_name="tw_stock_daily_signals_v6.csv",
             mime="text/csv",
         )
 
-        if n_v5 > 0:
+        if n_v6 > 0:
             recent_v = daily_result[daily_result["近5日新V"] == "是"].copy()
             recent_v = recent_v.sort_values(["V品質分數", "力道3日變化"], ascending=False, na_position="last")
             st.markdown("##### 近 5 日新 V：品質與歷史經濟性")
@@ -814,7 +844,7 @@ with daily_tab:
                     focus[c] = pd.to_numeric(focus[c], errors="coerce").round(2)
             st.dataframe(focus, use_container_width=True, hide_index=True)
 
-        with st.expander("v5 訊號中心判定規則"):
+        with st.expander("v6 訊號中心判定規則"):
             st.markdown(
                 "- **近 1/3/5 日新 V**：最近一次 V 距最新資料日分別為 0、≤2、≤4 個交易日。\n"
                 "- **連續轉強**：力道分數連續上升至少 2 個交易日。\n"
@@ -833,14 +863,14 @@ with daily_tab:
 
         st.caption("這些分級與排序是研究用訊號整理，不代表適合買進、賣出或保證未來報酬。不同資料來源若更新時間不同，請以各列『資料日』為準。")
 
-    daily_errors = st.session_state.get("daily_signal_errors_v5", [])
+    daily_errors = st.session_state.get("daily_signal_errors_v6", [])
     if daily_errors:
         with st.expander(f"有 {len(daily_errors)} 檔未成功取得資料"):
             st.write("\n".join(daily_errors))
 
 with screener_tab:
     st.markdown("#### 免費觀察池選股排行")
-    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v5 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
+    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v6 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
     left, right = st.columns([1, 2])
     with left:
         pool = st.selectbox("內建股票池", list(WATCHLISTS.keys()), key="screen_pool")
@@ -882,13 +912,173 @@ with screener_tab:
             show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
         st.dataframe(show, use_container_width=True, hide_index=True)
         csv = show.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v5.csv", "text/csv")
+        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v6.csv", "text/csv")
         st.caption("技術排名分數 = 60% 力道 + 20% 20日動能 + 10% 量價 + 10% 20日區間位置；沒有使用未來資料。")
 
     screen_errors = st.session_state.get("screen_errors", [])
     if screen_errors:
         with st.expander(f"有 {len(screen_errors)} 檔未成功取得資料"):
             st.write("\n".join(screen_errors))
+
+with forward_tab:
+    st.markdown("#### v6 前向驗證 / Paper Tracking")
+    st.caption(
+        "這裡只統計 v6 上線後由每日快照真正記錄下來的預測；歷史回測不會混進來。"
+        "快照欄位建立後不回頭改寫，未來 5/10/20 個交易日到期時才補上實際結果。"
+    )
+
+    forward_log = load_forward_log()
+    current_latest_date = pd.Timestamp(latest["date"]).date()
+    now_tw = pd.Timestamp.now(tz="Asia/Taipei")
+    age_days = (now_tw.date() - current_latest_date).days
+
+    health1, health2, health3, health4 = st.columns(4)
+    health1.metric("目前個股資料日", current_latest_date.isoformat(), f"距今天 {max(age_days, 0)} 天")
+    health2.metric("模型版本", MODEL_VERSION)
+
+    if forward_log.empty:
+        health3.metric("前向快照", "尚未開始")
+        health4.metric("已完成 5 日驗證", "0")
+        if age_days <= 3:
+            st.success("目前個股價格資料看起來有更新；前向紀錄尚未開始累積。")
+        else:
+            st.warning("目前個股最新資料距今天超過 3 個日曆日，請先確認資料來源是否更新。")
+        st.info(
+            "v6 第一次升級後，請到 GitHub → Actions → Daily forward validation → Run workflow 手動跑一次。"
+            "之後工作流程會在週一到週五台北時間 17:30 自動執行；假日若沒有新交易日，不會重複新增快照。"
+        )
+    else:
+        latest_forward_ts = pd.to_datetime(forward_log["data_date"], errors="coerce").max()
+        latest_forward_date = latest_forward_ts.date() if pd.notna(latest_forward_ts) else None
+        latest_slice = forward_log[pd.to_datetime(forward_log["data_date"], errors="coerce").dt.date.eq(latest_forward_date)] if latest_forward_date else pd.DataFrame()
+        done_5 = int(pd.to_numeric(forward_log.get("ret_5d"), errors="coerce").notna().sum())
+        health3.metric("最新前向快照", latest_forward_date.isoformat() if latest_forward_date else "—", f"{len(latest_slice)} 檔")
+        health4.metric("已完成 5 日驗證", f"{done_5:,}")
+
+        current_snapshot_ok = bool(
+            latest_forward_date
+            and latest_forward_date == current_latest_date
+            and (
+                forward_log["stock_id"].astype(str).eq(stock_id)
+                & pd.to_datetime(forward_log["data_date"], errors="coerce").dt.date.eq(current_latest_date)
+                & forward_log["model_version"].astype(str).eq(MODEL_VERSION)
+            ).any()
+        )
+        if current_snapshot_ok:
+            st.success("資料健康檢查：目前個股的最新交易日已存在 v6 前向快照。")
+        elif latest_forward_date and (current_latest_date - latest_forward_date).days <= 3:
+            st.info("前向紀錄正在累積中；最新快照日期與目前行情資料接近。若今天剛升級，可先手動執行一次 GitHub Actions。")
+        else:
+            st.warning("前向快照可能落後目前行情資料，請到 GitHub Actions 檢查最近一次 Daily forward validation 是否成功。")
+
+        versions = [str(x) for x in forward_log.get("model_version", pd.Series(dtype=str)).dropna().unique().tolist()]
+        versions = sorted(versions, reverse=True)
+        selected_version = st.selectbox(
+            "驗證模型版本",
+            versions or [MODEL_VERSION],
+            index=0,
+            help="模型改版後分開計分，避免新舊規則混成一個成績。",
+        )
+        signal_focus = st.radio("訊號方向", ["V", "A"], horizontal=True, key="forward_signal_focus")
+        summary = forward_performance_summary(forward_log, signal=signal_focus, model_version=selected_version)
+
+        st.markdown(f"##### {signal_focus} 訊號：真正的前向實績")
+        if summary.empty or int(pd.to_numeric(summary.get("樣本數"), errors="coerce").fillna(0).sum()) == 0:
+            st.info("還沒有到期的前向樣本。5 個交易日後會開始出現第一批正式結果。")
+        else:
+            show_summary = summary.copy()
+            for col in ["方向勝率", "平均方向報酬", "中位方向報酬", "平均相對0050超額", "平均MFE", "平均MAE"]:
+                if col in show_summary.columns:
+                    show_summary[col] = (pd.to_numeric(show_summary[col], errors="coerce") * 100).round(2)
+            show_summary = show_summary.rename(columns={
+                "方向勝率": "方向勝率%",
+                "平均方向報酬": "平均方向報酬%",
+                "中位方向報酬": "中位方向報酬%",
+                "平均相對0050超額": "平均相對0050超額%",
+                "平均MFE": "平均MFE%",
+                "平均MAE": "平均MAE%",
+            })
+            st.dataframe(show_summary, use_container_width=True, hide_index=True)
+
+            five = summary[summary["期間"].eq("5日")]
+            if not five.empty and int(five.iloc[0]["樣本數"]) > 0:
+                row5 = five.iloc[0]
+                f1, f2, f3, f4 = st.columns(4)
+                f1.metric("5日已完成樣本", f"{int(row5['樣本數'])}")
+                f2.metric("5日方向勝率", pct_text(row5["方向勝率"]))
+                f3.metric("5日平均方向報酬", pct_text(row5["平均方向報酬"], 2))
+                f4.metric("5日相對0050超額", pct_text(row5["平均相對0050超額"], 2))
+
+        st.markdown("##### AI 機率校準：說 60% 的時候，後來真的多常上漲？")
+        calibration = forward_ai_calibration(forward_log, model_version=selected_version)
+        if calibration.empty:
+            st.info("需要至少有一批完成 5 個交易日的每日快照後，才會出現 AI 機率校準表。")
+        else:
+            cal_show = calibration.copy()
+            for col in ["平均預測機率", "實際5日上漲率", "平均5日報酬"]:
+                cal_show[col] = (pd.to_numeric(cal_show[col], errors="coerce") * 100).round(2)
+            cal_show = cal_show.rename(columns={
+                "平均預測機率": "平均預測機率%",
+                "實際5日上漲率": "實際5日上漲率%",
+                "平均5日報酬": "平均5日報酬%",
+            })
+            st.dataframe(cal_show, use_container_width=True, hide_index=True)
+            st.caption("校準表使用所有每日快照，不只 V/A。樣本少時百分比會很不穩定，先看樣本數。")
+
+        st.markdown("##### 最新每日快照")
+        latest_view = latest_slice.copy()
+        if not latest_view.empty:
+            latest_view["AI 5日上漲機率%"] = (pd.to_numeric(latest_view["ai_up_5d_prob"], errors="coerce") * 100).round(1)
+            latest_view["力道"] = pd.to_numeric(latest_view["strength_score"], errors="coerce").round(1)
+            latest_view["V品質分數"] = pd.to_numeric(latest_view["v_quality_score"], errors="coerce").round(1)
+            latest_view["RSI"] = pd.to_numeric(latest_view["rsi14"], errors="coerce").round(1)
+            latest_view["量比"] = pd.to_numeric(latest_view["volume_ratio"], errors="coerce").round(2)
+            cols = ["stock_id", "stock_name", "data_date", "close", "signal", "v_grade", "V品質分數", "力道", "strength_band", "AI 5日上漲機率%", "RSI", "量比", "source"]
+            latest_view = latest_view[[c for c in cols if c in latest_view.columns]].rename(columns={
+                "stock_id": "代號", "stock_name": "名稱", "data_date": "資料日", "close": "收盤",
+                "signal": "當日V/A", "v_grade": "V品質", "strength_band": "四色狀態", "source": "資料來源",
+            })
+            st.dataframe(latest_view, use_container_width=True, hide_index=True)
+
+        st.markdown("##### 已記錄的 V/A 訊號日誌")
+        siglog = forward_log[forward_log["signal"].astype(str).isin(["V", "A"])].copy()
+        siglog = siglog[siglog["model_version"].astype(str).eq(selected_version)]
+        siglog = siglog.sort_values("data_date", ascending=False).head(100)
+        if siglog.empty:
+            st.info("目前前向期間尚未出現 V/A。每日快照仍會照常保存，供 AI 機率校準使用。")
+        else:
+            view = siglog.copy()
+            percent_cols = ["ai_up_5d_prob", "ret_5d", "ret_10d", "ret_20d", "excess_5d", "mfe_5d", "mae_5d"]
+            for col in percent_cols:
+                if col in view.columns:
+                    view[col] = (pd.to_numeric(view[col], errors="coerce") * 100).round(2)
+            columns = [
+                "data_date", "stock_id", "stock_name", "signal", "v_grade", "v_quality_score", "strength_score",
+                "ai_up_5d_prob", "ret_5d", "ret_10d", "ret_20d", "excess_5d", "mfe_5d", "mae_5d", "model_version",
+            ]
+            view = view[[c for c in columns if c in view.columns]].rename(columns={
+                "data_date": "訊號日", "stock_id": "代號", "stock_name": "名稱", "signal": "V/A",
+                "v_grade": "V品質", "v_quality_score": "V品質分數", "strength_score": "力道",
+                "ai_up_5d_prob": "AI機率%", "ret_5d": "5日後%", "ret_10d": "10日後%", "ret_20d": "20日後%",
+                "excess_5d": "5日相對0050超額%", "mfe_5d": "5日MFE%", "mae_5d": "5日MAE%", "model_version": "模型版本",
+            })
+            st.dataframe(view, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "下載完整前向驗證紀錄 CSV",
+            forward_log.to_csv(index=False).encode("utf-8-sig"),
+            file_name="forward_signals_v6.csv",
+            mime="text/csv",
+        )
+
+    with st.expander("v6 為什麼這樣做？"):
+        st.markdown(
+            "- **快照與答案分開**：今天只保存今天已知的價格、訊號、力道與 AI 機率。\n"
+            "- **未來到期才補答案**：5/10/20 個交易日後才填入實際報酬，不用未來資料改寫今天的預測。\n"
+            "- **模型版本鎖定**：目前為 `v6-model-1.0`；之後修改演算法會換版本，舊成績不混入。\n"
+            "- **0050 基準**：同期間與 0050 比較，避免只因整體大盤上漲就誤以為訊號特別有效。\n"
+            "- **MFE / MAE**：MFE 是訊號後曾出現的最大有利漲幅，MAE 是最大不利跌幅，兩者皆以訊號日收盤為基準。"
+        )
 
 with data_tab:
     show = df[[
@@ -897,7 +1087,7 @@ with data_tab:
     ]].sort_values("date", ascending=False)
     st.dataframe(show, use_container_width=True, hide_index=True)
     csv = show.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v5.csv", mime="text/csv")
+    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v6.csv", mime="text/csv")
 
 st.divider()
 st.markdown(
