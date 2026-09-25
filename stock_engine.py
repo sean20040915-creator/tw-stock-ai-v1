@@ -487,3 +487,159 @@ def max_drawdown(curve: pd.Series) -> float:
     running_max = curve.cummax()
     dd = curve / running_max - 1
     return float(dd.min())
+
+
+
+def signal_performance_stats(
+    df: pd.DataFrame,
+    horizons: tuple[int, ...] = (5, 10, 20),
+) -> pd.DataFrame:
+    """Evaluate historical V/A signals without changing how signals are generated.
+
+    For V, a win means price is higher after the selected horizon.
+    For A, a win means price is lower after the selected horizon.
+    The function is for ex-post evaluation only; future prices are not used to create signals.
+    """
+    work = df.copy()
+    if "signal" not in work.columns or "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+
+    rows: list[dict] = []
+    for horizon in horizons:
+        forward = work["close"].shift(-horizon) / work["close"] - 1
+        for signal in ("V", "A"):
+            mask = (work["signal"] == signal) & forward.notna()
+            sample = forward.loc[mask]
+            if sample.empty:
+                rows.append({
+                    "訊號": signal,
+                    "期間": f"{horizon}日",
+                    "樣本數": 0,
+                    "勝率": np.nan,
+                    "平均方向報酬": np.nan,
+                    "中位方向報酬": np.nan,
+                    "平均原始漲跌": np.nan,
+                })
+                continue
+
+            directional = sample if signal == "V" else -sample
+            rows.append({
+                "訊號": signal,
+                "期間": f"{horizon}日",
+                "樣本數": int(len(sample)),
+                "勝率": float((directional > 0).mean()),
+                "平均方向報酬": float(directional.mean()),
+                "中位方向報酬": float(directional.median()),
+                "平均原始漲跌": float(sample.mean()),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def recent_signal_log(
+    df: pd.DataFrame,
+    horizon: int = 5,
+    limit: int = 30,
+) -> pd.DataFrame:
+    """Return recent V/A occurrences and their later outcome when enough data exists."""
+    work = df.copy()
+    if "signal" not in work.columns or "strength_score" not in work.columns:
+        work = add_indicators(work)
+    work = work.sort_values("date").reset_index(drop=True)
+    work["future_return"] = work["close"].shift(-horizon) / work["close"] - 1
+    signals = work.loc[work["signal"].isin(["V", "A"]), [
+        "date", "close", "signal", "strength_score", "future_return"
+    ]].copy()
+    if signals.empty:
+        return pd.DataFrame(columns=["日期", "訊號", "當日收盤", "力道", f"{horizon}日後漲跌%", "方向結果"])
+
+    direction_return = np.where(
+        signals["signal"].eq("V"),
+        signals["future_return"],
+        -signals["future_return"],
+    )
+    signals["direction_result"] = np.where(
+        signals["future_return"].isna(),
+        "尚未完成",
+        np.where(direction_return > 0, "成功", "失敗"),
+    )
+    signals["future_pct"] = signals["future_return"] * 100
+    out = signals.rename(columns={
+        "date": "日期",
+        "signal": "訊號",
+        "close": "當日收盤",
+        "strength_score": "力道",
+        "future_pct": f"{horizon}日後漲跌%",
+        "direction_result": "方向結果",
+    })[["日期", "訊號", "當日收盤", "力道", f"{horizon}日後漲跌%", "方向結果"]]
+    return out.tail(limit).sort_values("日期", ascending=False).reset_index(drop=True)
+
+
+def watchlist_signal_row(stock_id: str, df: pd.DataFrame, stock_name: str = "") -> dict:
+    """Compact daily dashboard row for a watchlist scan."""
+    enriched = add_indicators(df).sort_values("date").reset_index(drop=True)
+    clean = enriched.dropna(subset=["strength_score", "ret_20", "volume_ratio", "rsi14"]).reset_index(drop=True)
+    if len(clean) < 2:
+        raise ValueError("資料不足")
+
+    latest = clean.iloc[-1]
+    prev = clean.iloc[-2]
+    signal_rows = clean.loc[clean["signal"].isin(["V", "A"])].copy()
+
+    if signal_rows.empty:
+        last_signal = "—"
+        last_signal_date = "—"
+        bars_since = np.nan
+    else:
+        last_idx = int(signal_rows.index[-1])
+        last_row = signal_rows.iloc[-1]
+        last_signal = str(last_row["signal"])
+        last_signal_date = pd.Timestamp(last_row["date"]).date().isoformat()
+        bars_since = int(len(clean) - 1 - last_idx)
+
+    momentum_component = float(np.clip(50 + latest["ret_20"] * 220, 0, 100))
+    volume_direction = 1 if latest["ret_1"] >= 0 else -1
+    volume_component = float(np.clip(50 + (latest["volume_ratio"] - 1) * 30 * volume_direction, 0, 100))
+    location_component = float(np.clip(latest["breakout_pos20"] * 100, 0, 100))
+    rank_score = (
+        0.60 * float(latest["strength_score"])
+        + 0.20 * momentum_component
+        + 0.10 * volume_component
+        + 0.10 * location_component
+    )
+
+    stats = signal_performance_stats(enriched, horizons=(5,))
+
+    def _extract(signal: str) -> tuple[float, int]:
+        row = stats[(stats["訊號"] == signal) & (stats["期間"] == "5日")]
+        if row.empty:
+            return np.nan, 0
+        r = row.iloc[0]
+        return float(r["勝率"]) if pd.notna(r["勝率"]) else np.nan, int(r["樣本數"])
+
+    v_win, v_n = _extract("V")
+    a_win, a_n = _extract("A")
+    fresh = str(latest["signal"]) if latest["signal"] in ("V", "A") else "—"
+
+    return {
+        "代號": normalize_stock_id(stock_id),
+        "名稱": stock_name,
+        "資料日": pd.Timestamp(latest["date"]).date().isoformat(),
+        "收盤": float(latest["close"]),
+        "日漲跌%": float((latest["close"] / prev["close"] - 1) * 100) if prev["close"] else np.nan,
+        "力道": float(latest["strength_score"]),
+        "四色狀態": strength_label(float(latest["strength_score"])),
+        "最新資料日V/A": fresh,
+        "上次V/A": last_signal,
+        "上次訊號日": last_signal_date,
+        "距上次訊號交易日": bars_since,
+        "20日動能%": float(latest["ret_20"] * 100),
+        "RSI": float(latest["rsi14"]),
+        "量比": float(latest["volume_ratio"]),
+        "V後5日勝率%": float(v_win * 100) if pd.notna(v_win) else np.nan,
+        "V樣本": int(v_n),
+        "A後5日勝率%": float(a_win * 100) if pd.notna(a_win) else np.nan,
+        "A樣本": int(a_n),
+        "技術排名分數": float(rank_score),
+    }

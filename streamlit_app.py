@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from io import BytesIO
 from typing import Iterable
 
 import numpy as np
@@ -17,14 +18,17 @@ from stock_engine import (
     fetch_stock_info,
     normalize_stock_id,
     recent_support_resistance,
+    recent_signal_log,
+    signal_performance_stats,
     strength_label,
     technical_screen_row,
     train_prediction_model,
+    watchlist_signal_row,
 )
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v2",
+    page_title="免費台股 AI 多空分析 v3",
     page_icon="📈",
     layout="wide",
 )
@@ -216,8 +220,53 @@ def stock_name_map(token: str) -> dict[str, str]:
     return names
 
 
-st.title("📈 免費台股 AI 多空分析系統 v2")
-st.caption("四色力道 K｜V/A 轉折｜Walk-forward｜免費觀察池選股")
+
+def parse_uploaded_watchlist(uploaded_file) -> list[str]:
+    """Read ticker symbols from a small CSV/TXT file without persisting it on the server."""
+    if uploaded_file is None:
+        return []
+    data = uploaded_file.getvalue()
+    name = (uploaded_file.name or "").lower()
+
+    if name.endswith(".csv"):
+        last_error = None
+        for encoding in ("utf-8-sig", "utf-8", "big5"):
+            try:
+                table = pd.read_csv(BytesIO(data), encoding=encoding, dtype=str)
+                if table.empty:
+                    return []
+                preferred = [c for c in ["代號", "stock_id", "ticker", "symbol", "股票代號"] if c in table.columns]
+                col = preferred[0] if preferred else table.columns[0]
+                return merge_unique(table[col].astype(str).tolist())
+            except Exception as exc:
+                last_error = exc
+        raise ValueError(f"CSV 無法讀取：{last_error}")
+
+    decoded = None
+    for encoding in ("utf-8-sig", "utf-8", "big5"):
+        try:
+            decoded = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        raise ValueError("文字檔編碼無法辨識，請改存成 UTF-8 CSV/TXT。")
+    return parse_tickers(decoded)
+
+
+def watchlist_csv_bytes(tickers: list[str], names: dict[str, str]) -> bytes:
+    table = pd.DataFrame({
+        "代號": tickers,
+        "名稱": [names.get(t, KNOWN_NAMES.get(t, "")) for t in tickers],
+    })
+    return table.to_csv(index=False).encode("utf-8-sig")
+
+
+if "watchlist_text" not in st.session_state:
+    st.session_state["watchlist_text"] = ", ".join(WATCHLISTS["大型權值"][:10])
+
+st.title("📈 免費台股 AI 多空分析系統 v3")
+st.caption("四色力道 K｜V/A 歷史勝率｜每日訊號總表｜自選股｜Walk-forward")
 
 with st.sidebar:
     st.header("個股分析設定")
@@ -250,7 +299,7 @@ with st.sidebar:
         st.session_state["one_way_cost_pct"] = one_way_cost_pct
 
     st.divider()
-    st.caption("v2 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
+    st.caption("v3 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
@@ -310,8 +359,8 @@ elif prob <= 0.40 and score <= 40:
 else:
     st.info("技術力道與模型機率目前沒有形成強烈同向，可視為中性或分歧。")
 
-summary_tab, strength_tab, model_tab, screener_tab, data_tab = st.tabs(
-    ["個股總覽", "四色力道 K + V/A", "AI / Walk-forward", "觀察池選股排行", "資料"]
+summary_tab, strength_tab, signal_tab, model_tab, daily_tab, screener_tab, data_tab = st.tabs(
+    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "AI / Walk-forward", "每日訊號 / 自選股", "觀察池選股排行", "資料"]
 )
 
 with summary_tab:
@@ -324,8 +373,52 @@ with summary_tab:
 
 with strength_tab:
     st.plotly_chart(strength_candle_chart(df), use_container_width=True)
-    st.caption("v2 四色：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 還會要求 MA20 與 MACD 同向確認，因此比 v1 更少、更嚴格。")
+    st.caption("v3 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
     st.caption("四色力道、翻轉線與 V/A 規則都是本專案自行設計，不是參考網站的專有公式。")
+
+
+with signal_tab:
+    st.markdown("#### V/A 歷史訊號統計")
+    st.caption("這裡是事後檢驗：V 訊號後價格上漲算成功；A 訊號後價格下跌算成功。未來價格只用來評估，不會參與產生訊號。")
+    stats = signal_performance_stats(df, horizons=(5, 10, 20))
+    show_stats = stats.copy()
+    show_stats["勝率"] = (show_stats["勝率"] * 100).round(1)
+    show_stats["平均方向報酬"] = (show_stats["平均方向報酬"] * 100).round(2)
+    show_stats["中位方向報酬"] = (show_stats["中位方向報酬"] * 100).round(2)
+    show_stats["平均原始漲跌"] = (show_stats["平均原始漲跌"] * 100).round(2)
+    show_stats = show_stats.rename(columns={
+        "勝率": "勝率%",
+        "平均方向報酬": "平均方向報酬%",
+        "中位方向報酬": "中位方向報酬%",
+        "平均原始漲跌": "平均原始漲跌%",
+    })
+    st.dataframe(show_stats, use_container_width=True, hide_index=True)
+
+    five = stats[stats["期間"] == "5日"].set_index("訊號")
+    v_row = five.loc["V"] if "V" in five.index else None
+    a_row = five.loc["A"] if "A" in five.index else None
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("V 後 5 日勝率", "—" if v_row is None or pd.isna(v_row["勝率"]) else f"{v_row['勝率'] * 100:.1f}%")
+    c2.metric("V 樣本數", "0" if v_row is None else f"{int(v_row['樣本數'])}")
+    c3.metric("A 後 5 日勝率", "—" if a_row is None or pd.isna(a_row["勝率"]) else f"{a_row['勝率'] * 100:.1f}%")
+    c4.metric("A 樣本數", "0" if a_row is None else f"{int(a_row['樣本數'])}")
+
+    st.markdown("#### 最近 V/A 紀錄")
+    log_horizon = st.selectbox("檢查訊號後幾個交易日", [5, 10, 20], index=0, key="signal_log_horizon")
+    log = recent_signal_log(df, horizon=int(log_horizon), limit=30)
+    if log.empty:
+        st.info("目前歷史區間內沒有 V/A 訊號。")
+    else:
+        for col in ["當日收盤", "力道", f"{log_horizon}日後漲跌%"]:
+            log[col] = pd.to_numeric(log[col], errors="coerce").round(2)
+        st.dataframe(log, use_container_width=True, hide_index=True)
+        st.download_button(
+            "下載 V/A 歷史紀錄 CSV",
+            log.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"{stock_id}_va_history_v3.csv",
+            mime="text/csv",
+        )
+    st.caption("樣本數少時勝率容易大幅波動；請同時看樣本數、不同期間與 walk-forward 結果，不要只看單一百分比。")
 
 with model_tab:
     st.markdown("#### Walk-forward 模型檢驗")
@@ -353,9 +446,126 @@ with model_tab:
     importance["importance"] = (importance["importance"] * 100).round(1)
     st.dataframe(importance, use_container_width=True, hide_index=True)
 
+
+with daily_tab:
+    st.markdown("#### 我的自選股與每日訊號總表")
+    st.caption("自選股先保存在目前瀏覽器工作階段；重新整理或服務重新啟動後可能重置，因此建議下載 CSV 備份。每次最多掃 25 檔，避免耗盡免費 API 額度。")
+
+    up_col, preset_col = st.columns([2, 3])
+    with up_col:
+        uploaded_watchlist = st.file_uploader("匯入自選股 CSV / TXT", type=["csv", "txt"], key="watchlist_upload")
+        if uploaded_watchlist is not None and st.button("匯入這份清單", key="import_watchlist"):
+            try:
+                imported = parse_uploaded_watchlist(uploaded_watchlist)[:25]
+                if not imported:
+                    st.warning("檔案裡沒有辨識到股票代號。")
+                else:
+                    st.session_state["watchlist_text"] = ", ".join(imported)
+                    st.success(f"已匯入 {len(imported)} 檔。")
+            except Exception as exc:
+                st.error(f"匯入失敗：{exc}")
+    with preset_col:
+        st.write("快速載入內建清單")
+        preset_buttons = st.columns(4)
+        for idx, (label, values) in enumerate(WATCHLISTS.items()):
+            if preset_buttons[idx].button(label, key=f"preset_{label}"):
+                st.session_state["watchlist_text"] = ", ".join(values[:25])
+
+    watchlist_text = st.text_area(
+        "自選股代號（逗號、頓號或換行分隔）",
+        key="watchlist_text",
+        height=105,
+        help="例如：2330, 2317, 2454。最多使用前 25 檔。",
+    )
+    watchlist = parse_tickers(watchlist_text)[:25]
+    names_now = stock_name_map(token)
+    w1, w2 = st.columns([2, 1])
+    w1.write(f"目前自選股：{len(watchlist)} 檔｜" + ("、".join(watchlist) if watchlist else "尚未設定"))
+    w2.download_button(
+        "下載自選股 CSV",
+        watchlist_csv_bytes(watchlist, names_now),
+        file_name="my_tw_stock_watchlist.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    if st.button("📡 掃描最新訊號", type="primary", key="scan_my_watchlist", use_container_width=True, disabled=not bool(watchlist)):
+        progress = st.progress(0, text="開始掃描自選股…")
+        rows = []
+        errors = []
+        for idx, ticker in enumerate(watchlist, start=1):
+            progress.progress((idx - 1) / max(len(watchlist), 1), text=f"正在掃描 {ticker}（{idx}/{len(watchlist)}）")
+            try:
+                raw, _ = load_data(ticker, 2, source, token)
+                rows.append(watchlist_signal_row(ticker, raw, names_now.get(ticker, KNOWN_NAMES.get(ticker, ""))))
+            except Exception as exc:
+                errors.append(f"{ticker}: {exc}")
+        progress.progress(1.0, text="掃描完成")
+        st.session_state["daily_signal_result"] = pd.DataFrame(rows)
+        st.session_state["daily_signal_errors"] = errors
+
+    daily_result = st.session_state.get("daily_signal_result")
+    if isinstance(daily_result, pd.DataFrame) and not daily_result.empty:
+        latest_dates = pd.to_datetime(daily_result["資料日"], errors="coerce")
+        common_latest = latest_dates.max().date().isoformat() if latest_dates.notna().any() else "—"
+        fresh_v = int((daily_result["最新資料日V/A"] == "V").sum())
+        fresh_a = int((daily_result["最新資料日V/A"] == "A").sum())
+        strong_bull = int((daily_result["四色狀態"] == "強多").sum())
+        strong_bear = int((daily_result["四色狀態"] == "強空").sum())
+        d1, d2, d3, d4, d5 = st.columns(5)
+        d1.metric("最新資料日", common_latest)
+        d2.metric("新 V", fresh_v)
+        d3.metric("新 A", fresh_a)
+        d4.metric("強多", strong_bull)
+        d5.metric("強空", strong_bear)
+
+        filter_label = st.radio(
+            "快速篩選",
+            ["全部", "剛出現 V", "剛出現 A", "強多", "強空"],
+            horizontal=True,
+            key="daily_filter",
+        )
+        filtered = daily_result.copy()
+        if filter_label == "剛出現 V":
+            filtered = filtered[filtered["最新資料日V/A"] == "V"]
+        elif filter_label == "剛出現 A":
+            filtered = filtered[filtered["最新資料日V/A"] == "A"]
+        elif filter_label == "強多":
+            filtered = filtered[filtered["四色狀態"] == "強多"]
+        elif filter_label == "強空":
+            filtered = filtered[filtered["四色狀態"] == "強空"]
+
+        sort_mode = st.selectbox("排序", ["技術排名分數", "力道", "20日動能%", "V後5日勝率%", "A後5日勝率%"], key="daily_sort")
+        filtered = filtered.sort_values(sort_mode, ascending=False, na_position="last").reset_index(drop=True)
+        show_daily = filtered.copy()
+        for c in ["收盤", "日漲跌%", "力道", "20日動能%", "RSI", "量比", "V後5日勝率%", "A後5日勝率%", "技術排名分數"]:
+            if c in show_daily.columns:
+                show_daily[c] = pd.to_numeric(show_daily[c], errors="coerce").round(2)
+        st.dataframe(show_daily, use_container_width=True, hide_index=True)
+        st.download_button(
+            "下載每日訊號總表 CSV",
+            show_daily.to_csv(index=False).encode("utf-8-sig"),
+            file_name="tw_stock_daily_signals_v3.csv",
+            mime="text/csv",
+        )
+
+        selectable = daily_result["代號"].astype(str).tolist()
+        if selectable:
+            target = st.selectbox("快速切換個股分析", selectable, format_func=lambda x: f"{x} {names_now.get(x, '')}".strip(), key="daily_target")
+            if st.button("載入這檔到個股分析", key="load_daily_target"):
+                st.session_state["ticker"] = target
+                st.rerun()
+
+        st.caption("『剛出現 V/A』是指各股票最新可取得交易日的訊號；若資料來源更新時間不同，請以表格中的『資料日』為準。")
+
+    daily_errors = st.session_state.get("daily_signal_errors", [])
+    if daily_errors:
+        with st.expander(f"有 {len(daily_errors)} 檔未成功取得資料"):
+            st.write("\n".join(daily_errors))
+
 with screener_tab:
     st.markdown("#### 免費觀察池選股排行")
-    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v2 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
+    st.caption("這不是全市場掃描；為避免免費 API 額度與主機資源被一次耗盡，v3 每次最多掃 25 檔。排行是技術分數，不是投資推薦。")
     left, right = st.columns([1, 2])
     with left:
         pool = st.selectbox("內建股票池", list(WATCHLISTS.keys()), key="screen_pool")
@@ -397,7 +607,7 @@ with screener_tab:
             show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
         st.dataframe(show, use_container_width=True, hide_index=True)
         csv = show.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v2.csv", "text/csv")
+        st.download_button("下載本次選股排行 CSV", csv, "tw_stock_screener_v3.csv", "text/csv")
         st.caption("技術排名分數 = 60% 力道 + 20% 20日動能 + 10% 量價 + 10% 20日區間位置；沒有使用未來資料。")
 
     screen_errors = st.session_state.get("screen_errors", [])
@@ -412,7 +622,7 @@ with data_tab:
     ]].sort_values("date", ascending=False)
     st.dataframe(show, use_container_width=True, hide_index=True)
     csv = show.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v2.csv", mime="text/csv")
+    st.download_button("下載目前分析資料 CSV", data=csv, file_name=f"{stock_id}_analysis_v3.csv", mime="text/csv")
 
 st.divider()
 st.markdown(
