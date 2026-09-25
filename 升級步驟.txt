@@ -1,123 +1,72 @@
-免費台股 AI 多空分析系統 v6 → v7
-====================================
+免費台股 AI 多空分析系統 v8 — 從 v7 升級
+================================================
 
-v7 重點：通知中心 + Telegram/Discord 選用推播 + 研究部位停損/停利提醒。
-原本 Streamlit 網址不用換。
-模型沒有改，所以 MODEL_VERSION 仍是 v6-model-1.0，前向成績會繼續累積。
+這次比 v6/v7 更簡單：不需要碰 .github，也不修改 GitHub Actions。
 
-【最重要：先保護 v6 資料】
-不要覆蓋 GitHub 現有的：
-data/forward_signals.csv
+【你只需要上傳 2 個程式檔】
 
-如果你已修改自己的追蹤股票，也不要覆蓋：
-forward_watchlist.csv
+1. 解壓縮 tw_stock_ai_v8_upgrade.zip
 
-建議直接使用 tw_stock_ai_v7_upgrade.zip。
-這個更新包刻意不放上述兩個檔案。
+2. 到你原本的 GitHub Repository
 
-【步驟 1】
-下載並解壓縮 tw_stock_ai_v7_upgrade.zip
+3. 上傳並覆蓋：
+   streamlit_app.py
 
-【步驟 2】
-到原本 GitHub repository。
-把更新包內容上傳並覆蓋原檔。
+4. 新增：
+   portfolio_engine.py
 
-主要更新：
-1. streamlit_app.py
-2. forward_tracker.py
-3. .github/workflows/forward_tracker.yml
-4. README.md
-5. 升級步驟.txt
+5. 按 Commit changes
 
-主要新增：
-6. notification_engine.py
-7. test_notification.py
-8. notification_settings.csv
-9. paper_positions.csv
-10. data/notification_events.csv
-11. .github/workflows/test_notification.yml
+6. 不用更改以下檔案：
+   .github/workflows/forward_tracker.yml
+   .github/workflows/test_notification.yml
+   forward_tracker.py
+   notification_engine.py
+   forward_watchlist.csv
+   notification_settings.csv
+   paper_positions.csv
+   data/forward_signals.csv
+   data/notification_events.csv
 
-注意：
-.github 是隱藏資料夾。
-在 GitHub 網頁確認必須看到：
-.github/workflows/forward_tracker.yml
-.github/workflows/test_notification.yml
+7. 回原本 Streamlit 網址重新整理。
 
-【步驟 3】
-Commit changes。
+8. 標題應變成：
+   免費台股 AI 多空分析系統 v8
 
-【步驟 4】
-回 Streamlit 重新整理。
-應看到：
-「免費台股 AI 多空分析系統 v7」
-以及新的「通知中心」頁籤。
+9. 頁籤應多出：
+   投資組合模擬
 
-【步驟 5：先測網站內通知紀錄】
-到 GitHub → Actions → Daily forward validation → Run workflow。
+【第一次建議測試】
 
-跑完後看：
-data/notification_events.csv
+股票池：大型權值 → 套用這個股票池
+代號：前 8 檔即可
+初始資金：1,000,000
+最多同時持股：5
+單檔目標資金：20%
+V 品質：A、B
+最低力道：55
+最低量比：1.0
+持有：10 日
+停損：6%
+停利：12%
+0050 比較：勾選
 
-如果當天有新 V/A、A 級 V、快速升溫或研究部位觸發條件，就會新增通知事件。
-如果當天沒有任何事件，CSV 沒新增是正常的。
+按「執行投資組合模擬」。
 
-【Telegram 推播：選用】
-先在 Telegram 用官方 @BotFather 建 bot 並取得 Bot Token。
-對 bot 按 Start 並傳一則訊息，再利用 Bot API getUpdates 找到 chat.id。
+正常時會看到：
+- 期末模擬資產
+- 累積報酬
+- 年化報酬
+- 最大回撤
+- Sharpe
+- 完成交易數
+- 勝率
+- 平均市場曝險
+- 0050 同期比較
+- 投資組合資金曲線
+- 持股數 / 現金比重
+- 個股貢獻
+- 逐筆交易
 
-到 GitHub：
-Repository → Settings → Secrets and variables → Actions
-新增：
-TELEGRAM_BOT_TOKEN
-TELEGRAM_CHAT_ID
-
-不要把 token 貼進 GitHub 程式碼或 CSV。
-
-【Discord 推播：選用】
-Discord Server Settings → Integrations → Webhooks
-建立 webhook → Copy Webhook URL。
-
-GitHub Actions Secret 新增：
-DISCORD_WEBHOOK_URL
-
-【測試 Telegram / Discord】
-設定至少一個通知管道後：
-GitHub → Actions → Test notifications → Run workflow
-
-成功後會收到：
-「台股 AI v7 測試通知成功」
-
-如果完全沒有設定通知 Secrets，Test notifications 會故意失敗並提示尚未設定。
-
-【研究部位停損 / 停利】
-編輯 GitHub 的 paper_positions.csv，例如：
-
-position_id,stock_id,label,entry_date,entry_price,stop_loss_pct,take_profit_pct,enabled
-p001,2330,2330研究部位,2026-09-25,1250,6,12,1
-
-這只是收盤後日 K 研究提醒，不是盤中即時警報。
-同一天同時碰到停損與停利時，v7 保守採停損先發生。
-
-【通知規則】
-notification_settings.csv 預設：
-- 新 V：開
-- 新 A：開
-- A 級 V：開
-- 3 日力道 +10 / 5 日 +15：開
-- 5 日前向成熟結果通知：關
-- 研究部位停損停利：開
-
-要關閉某個布林規則，把 1 改成 0 即可。
-
-【v7 完成標準】
-1. v1～v6 舊功能仍正常。
-2. 前向驗證資料沒有被清空。
-3. 網站顯示 v7。
-4. 通知中心可打開。
-5. GitHub Actions 有兩個 workflow。
-6. Daily forward validation 能成功。
-7. data/notification_events.csv 可正常保留事件。
-8. 如果設定推播，Test notifications 能收到測試訊息。
-
-最重要：
-v7 的通知代表「研究條件被觸發」，不是交易建議，也不是自動下單。
+【重要】
+這個升級包沒有 data/ 資料與 .github workflow，目的就是避免覆蓋 v6/v7 已累積的前向驗證與通知紀錄。

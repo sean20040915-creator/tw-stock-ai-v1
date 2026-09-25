@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+from portfolio_engine import build_benchmark_curve, portfolio_backtest
+
 from stock_engine import (
     MODEL_VERSION,
     add_indicators,
@@ -35,7 +37,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v7",
+    page_title="免費台股 AI 多空分析 v8",
     page_icon="📈",
     layout="wide",
 )
@@ -260,6 +262,33 @@ def strategy_equity_chart(equity: pd.DataFrame) -> go.Figure:
     return no_weekend(fig)
 
 
+def portfolio_equity_chart(equity: pd.DataFrame, benchmark: pd.DataFrame | None = None) -> go.Figure:
+    fig = go.Figure()
+    if not equity.empty:
+        fig.add_trace(go.Scatter(x=equity["date"], y=equity["equity"], name="V 訊號投資組合", mode="lines"))
+    if benchmark is not None and not benchmark.empty:
+        fig.add_trace(go.Scatter(x=benchmark["date"], y=benchmark["equity"], name="0050 買進持有基準", mode="lines"))
+    fig.update_layout(
+        height=460,
+        margin=dict(l=10, r=10, t=35, b=10),
+        yaxis_title="模擬資產",
+        legend_orientation="h",
+        hovermode="x unified",
+    )
+    return no_weekend(fig)
+
+
+def portfolio_position_chart(equity: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.5, 0.5], vertical_spacing=0.08)
+    if not equity.empty:
+        fig.add_trace(go.Scatter(x=equity["date"], y=equity["positions"], name="持股檔數", mode="lines"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=equity["date"], y=equity["cash_ratio"] * 100, name="現金比重%", mode="lines"), row=2, col=1)
+    fig.update_yaxes(title_text="檔數", row=1, col=1)
+    fig.update_yaxes(title_text="現金%", range=[0, 105], row=2, col=1)
+    fig.update_layout(height=390, margin=dict(l=10, r=10, t=30, b=10), legend_orientation="h", hovermode="x unified")
+    return no_weekend(fig)
+
+
 def parse_tickers(text: str) -> list[str]:
     for ch in ["，", "、", ";", "；", "\n", "\t"]:
         text = text.replace(ch, ",")
@@ -338,8 +367,8 @@ if "watchlist_text" not in st.session_state:
 
 secret_finmind_token = get_streamlit_secret("FINMIND_TOKEN")
 
-st.title("📈 免費台股 AI 多空分析系統 v7")
-st.caption("通知中心｜前向驗證｜每日自動快照｜策略研究實驗室｜每日訊號中心｜Walk-forward")
+st.title("📈 免費台股 AI 多空分析系統 v8")
+st.caption("投資組合模擬器｜通知中心｜前向驗證｜每日自動快照｜策略研究實驗室｜Walk-forward")
 
 with st.sidebar:
     st.header("個股分析設定")
@@ -372,7 +401,7 @@ with st.sidebar:
         st.session_state["one_way_cost_pct"] = one_way_cost_pct
 
     st.divider()
-    st.caption("v7 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
+    st.caption("v8 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
@@ -432,8 +461,8 @@ elif prob <= 0.40 and score <= 40:
 else:
     st.info("技術力道與模型機率目前沒有形成強烈同向，可視為中性或分歧。")
 
-summary_tab, strength_tab, signal_tab, strategy_tab, model_tab, daily_tab, screener_tab, forward_tab, notification_tab, data_tab = st.tabs(
-    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "通知中心", "資料"]
+summary_tab, strength_tab, signal_tab, strategy_tab, portfolio_tab, model_tab, daily_tab, screener_tab, forward_tab, notification_tab, data_tab = st.tabs(
+    ["個股總覽", "四色力道 K + V/A", "V/A 歷史統計", "策略研究實驗室", "投資組合模擬", "AI / Walk-forward", "每日訊號中心", "觀察池選股排行", "前向驗證", "通知中心", "資料"]
 )
 
 with summary_tab:
@@ -446,7 +475,7 @@ with summary_tab:
 
 with strength_tab:
     st.plotly_chart(strength_candle_chart(df), use_container_width=True)
-    st.caption("v7 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
+    st.caption("v8 沿用四色規則：強多(≥70)、偏多(50–69)、偏空(30–49)、強空(<30)。V/A 會要求 MA20 與 MACD 同向確認。")
     st.caption("四色力道、翻轉線與 V/A 規則都是本專案自行設計，不是參考網站的專有公式。")
 
 
@@ -526,7 +555,7 @@ with signal_tab:
         st.download_button(
             "下載 V/A 歷史紀錄 CSV",
             log.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{stock_id}_va_history_v7.csv",
+            file_name=f"{stock_id}_va_history_v8.csv",
             mime="text/csv",
         )
     st.caption("樣本數少時勝率容易大幅波動；請同時看樣本數、不同期間與 walk-forward 結果，不要只看單一百分比。")
@@ -700,6 +729,233 @@ with strategy_tab:
             "- **跳空**：若開盤已越過停損/停利價，使用實際開盤價出場。\n"
             "- **成本**：進場與出場各扣一次側欄設定的單邊成本。尚未模擬滑價、股利與完整稅費差異。"
         )
+
+
+
+with portfolio_tab:
+    st.markdown("#### 💼 v8 投資組合模擬器")
+    st.caption(
+        "把多檔股票的 V 訊號放進同一筆資金裡研究。V 在收盤後才確認，因此仍使用下一交易日開盤進場；"
+        "同日候選過多時，依 V 品質、品質分數、力道與量比排序。模擬不使用槓桿。"
+    )
+
+    if "portfolio_universe_v8" not in st.session_state:
+        st.session_state["portfolio_universe_v8"] = ", ".join(WATCHLISTS["大型權值"][:8])
+
+    pool_options = ["大型權值", "AI / 電子", "金融", "ETF", "自訂"]
+    ptop1, ptop2 = st.columns([1, 2])
+    with ptop1:
+        portfolio_pool = st.selectbox("股票池", pool_options, key="portfolio_pool_v8")
+    with ptop2:
+        if portfolio_pool != "自訂":
+            suggested = ", ".join(WATCHLISTS[portfolio_pool][:12])
+            if st.button("套用這個股票池", key="apply_portfolio_pool_v8"):
+                st.session_state["portfolio_universe_v8"] = suggested
+                st.rerun()
+        portfolio_text = st.text_area(
+            "股票代號（逗號分隔，免費版建議 5～12 檔）",
+            key="portfolio_universe_v8",
+            height=82,
+            help="例如：2330, 2317, 2454, 2308, 2382。一次太多股票會增加免費 API 呼叫與運算時間。",
+        )
+
+    with st.form("portfolio_lab_form_v8"):
+        r1, r2, r3, r4 = st.columns(4)
+        with r1:
+            pf_initial = st.number_input("初始資金（元）", min_value=100_000, max_value=100_000_000, value=1_000_000, step=100_000)
+            pf_max_positions = st.slider("最多同時持股", 1, 10, 5, 1)
+            pf_position_pct = st.slider("單檔目標資金比例（%）", 5, 50, 20, 5)
+        with r2:
+            pf_grades = st.multiselect("允許 V 品質", ["A", "B", "C", "D"], default=["A", "B"])
+            pf_min_strength = st.slider("最低力道", 50, 90, 55, 1, key="pf_min_strength_v8")
+            pf_min_volume = st.slider("最低量比", 0.5, 3.0, 1.0, 0.1, key="pf_min_volume_v8")
+        with r3:
+            pf_momentum_enabled = st.checkbox("啟用 20 日動能門檻", value=False, key="pf_momentum_enabled_v8")
+            pf_min_momentum = st.slider("最低 20 日動能（%）", -20.0, 40.0, 0.0, 1.0, disabled=not pf_momentum_enabled, key="pf_min_momentum_v8")
+            pf_hold_days = st.selectbox("最長持有交易日", [5, 10, 20], index=1, key="pf_hold_days_v8")
+        with r4:
+            pf_stop_enabled = st.checkbox("啟用停損", value=True, key="pf_stop_enabled_v8")
+            pf_stop = st.slider("停損（%）", 1.0, 20.0, 6.0, 0.5, disabled=not pf_stop_enabled, key="pf_stop_v8")
+            pf_take_enabled = st.checkbox("啟用停利", value=True, key="pf_take_enabled_v8")
+            pf_take = st.slider("停利（%）", 2.0, 40.0, 12.0, 0.5, disabled=not pf_take_enabled, key="pf_take_v8")
+
+        compare_0050 = st.checkbox("與 0050 買進持有做歷史基準比較", value=True)
+        run_portfolio = st.form_submit_button("💼 執行投資組合模擬", type="primary", use_container_width=True)
+
+    if pf_position_pct * pf_max_positions > 100:
+        st.info("單檔比例 × 最大持股數超過 100%。v8 不會使用槓桿；現金不足時會自動縮小或略過後續進場。")
+
+    if run_portfolio:
+        tickers = parse_tickers(portfolio_text)
+        if not tickers:
+            st.error("請至少輸入一個股票代號。")
+        else:
+            if len(tickers) > 12:
+                st.warning("為了免費 API 與運算穩定，v8 一次最多模擬前 12 檔。")
+                tickers = tickers[:12]
+
+            data_map = {}
+            failures = []
+            progress = st.progress(0.0, text="正在取得投資組合歷史資料…")
+            for i, sid in enumerate(tickers, start=1):
+                try:
+                    raw_pf, _ = load_data(sid, years, source, token)
+                    data_map[sid] = add_indicators(raw_pf)
+                except Exception as exc:
+                    failures.append(f"{sid}: {exc}")
+                progress.progress(i / max(len(tickers), 1), text=f"正在處理 {sid}（{i}/{len(tickers)}）")
+            progress.empty()
+
+            if failures:
+                st.warning("部分股票無法取得資料，已略過：" + "；".join(failures[:5]))
+
+            if not data_map:
+                st.error("這次沒有任何股票可供模擬，請檢查代號或資料來源。")
+            else:
+                try:
+                    trades_pf, equity_pf, stats_pf, contribution_pf = portfolio_backtest(
+                        data_map,
+                        stock_names=names,
+                        initial_capital=float(pf_initial),
+                        allowed_grades=tuple(pf_grades),
+                        min_strength=float(pf_min_strength),
+                        min_volume_ratio=float(pf_min_volume),
+                        min_momentum_20=float(pf_min_momentum) if pf_momentum_enabled else None,
+                        hold_days=int(pf_hold_days),
+                        stop_loss_pct=float(pf_stop) / 100 if pf_stop_enabled else None,
+                        take_profit_pct=float(pf_take) / 100 if pf_take_enabled else None,
+                        one_way_cost=float(one_way_cost),
+                        max_positions=int(pf_max_positions),
+                        position_pct=float(pf_position_pct) / 100,
+                    )
+
+                    benchmark_pf = pd.DataFrame()
+                    benchmark_stats_pf = {}
+                    if compare_0050 and not equity_pf.empty:
+                        try:
+                            if "0050" in data_map:
+                                bench_raw = data_map["0050"]
+                            else:
+                                bench_raw, _ = load_data("0050", years, source, token)
+                            benchmark_pf, benchmark_stats_pf = build_benchmark_curve(
+                                bench_raw,
+                                equity_pf["date"],
+                                float(pf_initial),
+                            )
+                        except Exception as exc:
+                            st.warning(f"0050 基準暫時無法建立：{exc}")
+
+                    st.session_state["portfolio_result_v8"] = {
+                        "trades": trades_pf,
+                        "equity": equity_pf,
+                        "stats": stats_pf,
+                        "contribution": contribution_pf,
+                        "benchmark": benchmark_pf,
+                        "benchmark_stats": benchmark_stats_pf,
+                        "tickers": list(data_map.keys()),
+                        "years": years,
+                        "latest_dates": {k: pd.Timestamp(v["date"].max()).date().isoformat() for k, v in data_map.items()},
+                        "params": {
+                            "initial": pf_initial,
+                            "max_positions": pf_max_positions,
+                            "position_pct": pf_position_pct,
+                            "grades": pf_grades,
+                            "min_strength": pf_min_strength,
+                            "min_volume": pf_min_volume,
+                            "hold_days": pf_hold_days,
+                            "stop": pf_stop if pf_stop_enabled else None,
+                            "take": pf_take if pf_take_enabled else None,
+                        },
+                    }
+                except Exception as exc:
+                    st.error(f"投資組合模擬無法完成：{exc}")
+
+    pf = st.session_state.get("portfolio_result_v8")
+    if isinstance(pf, dict):
+        trades_pf = pf.get("trades", pd.DataFrame())
+        equity_pf = pf.get("equity", pd.DataFrame())
+        stats_pf = pf.get("stats", {})
+        contribution_pf = pf.get("contribution", pd.DataFrame())
+        benchmark_pf = pf.get("benchmark", pd.DataFrame())
+        benchmark_stats_pf = pf.get("benchmark_stats", {})
+        params_pf = pf.get("params", {})
+
+        st.markdown("#### 模擬結果")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("期末模擬資產", f"${stats_pf.get('ending_equity', 0):,.0f}")
+        m2.metric("累積報酬", pct_text(stats_pf.get("total_return"), 1))
+        m3.metric("年化報酬", pct_text(stats_pf.get("cagr"), 1))
+        m4.metric("最大回撤", pct_text(stats_pf.get("max_drawdown"), 1))
+
+        m5, m6, m7, m8 = st.columns(4)
+        m5.metric("Sharpe（0%無風險利率）", "—" if pd.isna(stats_pf.get("sharpe")) else f"{stats_pf.get('sharpe'):.2f}")
+        m6.metric("完成交易", f"{int(stats_pf.get('trades', 0))}")
+        m7.metric("交易勝率", pct_text(stats_pf.get("win_rate"), 1))
+        m8.metric("平均市場曝險", pct_text(stats_pf.get("exposure"), 1))
+
+        if benchmark_stats_pf:
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("0050 同期累積報酬", pct_text(benchmark_stats_pf.get("total_return"), 1))
+            b2.metric("0050 同期年化報酬", pct_text(benchmark_stats_pf.get("cagr"), 1))
+            b3.metric("0050 同期最大回撤", pct_text(benchmark_stats_pf.get("max_drawdown"), 1))
+            if pd.notna(stats_pf.get("total_return")) and pd.notna(benchmark_stats_pf.get("total_return")):
+                excess = float(stats_pf.get("total_return")) - float(benchmark_stats_pf.get("total_return"))
+                b4.metric("歷史累積報酬差", f"{excess * 100:+.1f} 個百分點")
+            else:
+                b4.metric("歷史累積報酬差", "—")
+
+        if not equity_pf.empty:
+            st.plotly_chart(portfolio_equity_chart(equity_pf, benchmark_pf), use_container_width=True)
+            st.plotly_chart(portfolio_position_chart(equity_pf), use_container_width=True)
+
+        x1, x2, x3, x4 = st.columns(4)
+        x1.metric("候選 V 訊號", f"{int(stats_pf.get('candidate_signals', 0))}")
+        x2.metric("因滿倉略過", f"{int(stats_pf.get('skipped_slots', 0))}")
+        x3.metric("因現金不足略過", f"{int(stats_pf.get('skipped_no_cash', 0))}")
+        x4.metric("歷史最高同時持股", f"{int(stats_pf.get('max_positions_used', 0))}")
+
+        st.markdown("#### 個股貢獻拆解")
+        if isinstance(contribution_pf, pd.DataFrame) and not contribution_pf.empty:
+            contrib_show = contribution_pf.copy()
+            contrib_show["勝率"] = (pd.to_numeric(contrib_show["勝率"], errors="coerce") * 100).round(1)
+            contrib_show["平均淨報酬"] = (pd.to_numeric(contrib_show["平均淨報酬"], errors="coerce") * 100).round(2)
+            contrib_show["損益金額"] = pd.to_numeric(contrib_show["損益金額"], errors="coerce").round(0)
+            contrib_show = contrib_show.rename(columns={"勝率": "勝率%", "平均淨報酬": "平均淨報酬%"})
+            st.dataframe(contrib_show, use_container_width=True, hide_index=True)
+        else:
+            st.info("這組條件沒有完成交易，因此尚無個股貢獻。")
+
+        st.markdown("#### 逐筆交易")
+        if isinstance(trades_pf, pd.DataFrame) and not trades_pf.empty:
+            show_trades = trades_pf.copy().sort_values("進場日", ascending=False)
+            for c in ["毛報酬", "淨報酬"]:
+                show_trades[c] = (pd.to_numeric(show_trades[c], errors="coerce") * 100).round(2)
+            for c in ["進場價", "出場價", "投入金額", "損益金額", "V品質分數", "訊號力道", "訊號量比", "訊號20日動能%"]:
+                show_trades[c] = pd.to_numeric(show_trades[c], errors="coerce").round(2)
+            show_trades = show_trades.rename(columns={"毛報酬": "毛報酬%", "淨報酬": "淨報酬%"})
+            st.dataframe(show_trades, use_container_width=True, hide_index=True)
+            st.download_button(
+                "下載投資組合逐筆交易 CSV",
+                trades_pf.to_csv(index=False).encode("utf-8-sig"),
+                file_name="portfolio_backtest_v8.csv",
+                mime="text/csv",
+            )
+        else:
+            st.warning("目前條件沒有完成交易。可以增加 C 級、降低力道/量比門檻，或改用較長歷史區間。")
+
+        st.caption(
+            "v8 是歷史模擬，不代表未來績效。0050 基準使用同期每日收盤價正規化；投資組合則包含你設定的交易成本、"
+            "下一日開盤進場、停損/停利與資金/持股上限，因此兩者是研究比較，不是完全相同的交易執行假設。"
+        )
+        with st.expander("v8 如何避免常見回測作弊？"):
+            st.markdown(
+                "- V 訊號只在當日收盤後成立，最早下一交易日開盤進場。\n"
+                "- V 品質不使用該次訊號未來才發生的價格。\n"
+                "- 同日訊號過多時使用固定排序規則，不事後挑最會漲的股票。\n"
+                "- 不使用槓桿；現金不足就縮小/略過進場。\n"
+                "- 同一天同時碰到停損與停利，採保守的停損優先。\n"
+                "- 當天才在收盤出場的持股，早上仍占用持股名額；不把收盤才拿回的資金假裝拿去早盤買新股票。"
+            )
 
 
 with model_tab:
@@ -947,7 +1203,7 @@ with screener_tab:
             st.write("\n".join(screen_errors))
 
 with forward_tab:
-    st.markdown("#### v7 前向驗證 / Paper Tracking")
+    st.markdown("#### v8 前向驗證 / Paper Tracking")
     st.caption(
         "這裡只統計 v6 起由每日快照真正記錄下來的預測；歷史回測不會混進來。"
         "快照欄位建立後不回頭改寫，未來 5/10/20 個交易日到期時才補上實際結果。"
@@ -1108,7 +1364,7 @@ with forward_tab:
 
 
 with notification_tab:
-    st.markdown("#### 🔔 v7 通知中心")
+    st.markdown("#### 🔔 v8 通知中心")
     st.caption(
         "GitHub Actions 每日收盤後偵測新 V/A、A 級 V、力道快速升溫，以及你自行登錄研究部位的停損／停利。"
         "就算沒有設定 Telegram 或 Discord，事件仍會寫進 data/notification_events.csv。"
