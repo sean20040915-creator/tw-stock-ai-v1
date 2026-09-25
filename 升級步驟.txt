@@ -1,0 +1,29 @@
+【你已經有 v1，所以這次很簡單】
+
+1. 下載 v2 ZIP 並解壓縮。
+2. 打開你原本 GitHub 的 tw-stock-ai-v1 repository。
+3. 把以下 3 個檔案上傳並選擇取代舊檔：
+   - streamlit_app.py
+   - stock_engine.py
+   - requirements.txt
+4. GitHub 最下面按 Commit changes。
+5. 回到你原本的 Streamlit 網站。
+6. Streamlit Community Cloud 通常會自動偵測 GitHub 更新並重新部署。
+7. 看到網頁標題變成「免費台股 AI 多空分析系統 v2」就成功了。
+
+如果 Streamlit 沒有自動更新：
+- 進入 Streamlit 管理頁面
+- 找到你的 App
+- Reboot / 重新啟動 App
+
+v2 新增：
+- 四色力道 K
+- V/A 轉折確認
+- 趨勢翻轉線
+- Walk-forward 模型回測
+- Brier score
+- 可調整交易成本
+- 觀察池選股排行（一次最多 25 檔）
+
+建議第一次先測：2330
+接著到「觀察池選股排行」選「大型權值」，先掃 5 檔確認功能正常，再增加到 15 檔。
