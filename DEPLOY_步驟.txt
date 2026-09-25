@@ -1,0 +1,21 @@
+【完全不會寫程式也能部署】
+
+1. 解壓縮 tw_stock_ai_v1.zip
+2. 登入 https://github.com/
+3. New repository → 名稱輸入 tw-stock-ai-v1 → Public → Create repository
+4. Add file → Upload files
+5. 把解壓縮後資料夾中的所有檔案上傳（包含 .streamlit 資料夾）
+6. Commit changes
+7. 登入 https://share.streamlit.io/
+8. Create app
+9. Repository 選 tw-stock-ai-v1
+10. Branch 選 main
+11. Main file path 輸入 streamlit_app.py
+12. Advanced settings → Python 選 3.12
+13. Deploy
+
+完成後，你會得到一個免費的 xxxxx.streamlit.app 網址。
+
+若網站顯示 FinMind 流量限制：
+- 左側「資料來源」改成「只用 Yahoo Finance」即可繼續使用。
+- 或到 FinMind 免費註冊取得 Token，再貼到左側 Token 欄位。
