@@ -1,1 +1,4 @@
 ﻿event_id,created_at,data_date,stock_id,stock_name,event_type,title,message,telegram_status,discord_status
+f35c6525a223ae6ca35944d1,2026-09-30T17:47:45.300392+08:00,2026-09-30,2317,鴻海,NEW_V,新 V 訊號,2317 鴻海 出現 V 訊號｜品質 C｜力道 94｜AI 5日上漲機率 42.2%,not_configured,not_configured
+60f35176e96302b4c8310149,2026-09-30T17:47:45.302868+08:00,2026-09-30,2344,華邦電,NEW_V,新 V 訊號,2344 華邦電 出現 V 訊號｜品質 B｜力道 72｜AI 5日上漲機率 47.1%,not_configured,not_configured
+27ee5b08e3b5326b89ac354a,2026-09-30T17:47:45.304009+08:00,2026-09-30,2382,廣達,NEW_A,新 A 訊號,2382 廣達 出現 A 訊號｜力道 26｜AI 5日上漲機率 42.3%,not_configured,not_configured
