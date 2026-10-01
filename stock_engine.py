@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 import numpy as np
@@ -12,6 +13,9 @@ from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 
 
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
+TWSE_LATEST_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+TPEX_LATEST_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 FEATURES = [
     "ret_1",
     "ret_5",
@@ -66,6 +70,98 @@ def _clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     out["volume"] = out["volume"].fillna(0)
     out = out[(out[["open", "high", "low", "close"]] > 0).all(axis=1)].reset_index(drop=True)
     return out
+
+
+def _taipei_today():
+    """Return Taiwan's calendar date regardless of the server timezone."""
+    return datetime.now(TAIPEI_TZ).date()
+
+
+def _parse_roc_date(value: str) -> pd.Timestamp:
+    text = str(value or "").strip().replace("/", "").replace("-", "")
+    if len(text) < 7 or not text[:7].isdigit():
+        return pd.NaT
+    year = int(text[:3]) + 1911
+    month = int(text[3:5])
+    day = int(text[5:7])
+    try:
+        return pd.Timestamp(year=year, month=month, day=day)
+    except Exception:
+        return pd.NaT
+
+
+def _number(value):
+    text = str(value if value is not None else "").strip().replace(",", "")
+    if text in {"", "--", "---", "X", "-"}:
+        return np.nan
+    try:
+        return float(text)
+    except Exception:
+        return np.nan
+
+
+def fetch_official_latest(stock_id: str) -> tuple[pd.DataFrame, str] | tuple[None, None]:
+    """Fetch the newest completed TWSE/TPEx daily bar as a freshness patch."""
+    code = normalize_stock_id(stock_id)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; tw-stock-ai/1.0)"}
+
+    try:
+        r = requests.get(TWSE_LATEST_URL, headers=headers, timeout=15)
+        r.raise_for_status()
+        rows = r.json()
+        row = next((x for x in rows if str(x.get("Code", "")).strip() == code), None)
+        if row:
+            frame = pd.DataFrame([{
+                "date": _parse_roc_date(row.get("Date")),
+                "open": _number(row.get("OpeningPrice")),
+                "high": _number(row.get("HighestPrice")),
+                "low": _number(row.get("LowestPrice")),
+                "close": _number(row.get("ClosingPrice")),
+                "volume": _number(row.get("TradeVolume")),
+            }])
+            frame = _clean_ohlcv(frame)
+            if not frame.empty:
+                return frame, "TWSE OpenAPI"
+    except Exception:
+        pass
+
+    try:
+        r = requests.get(TPEX_LATEST_URL, headers=headers, timeout=15)
+        r.raise_for_status()
+        rows = r.json()
+        row = next((x for x in rows if str(x.get("SecuritiesCompanyCode", "")).strip() == code), None)
+        if row:
+            frame = pd.DataFrame([{
+                "date": _parse_roc_date(row.get("Date")),
+                "open": _number(row.get("Open")),
+                "high": _number(row.get("High")),
+                "low": _number(row.get("Low")),
+                "close": _number(row.get("Close")),
+                "volume": _number(row.get("TradingShares")),
+            }])
+            frame = _clean_ohlcv(frame)
+            if not frame.empty:
+                return frame, "TPEx OpenAPI"
+    except Exception:
+        pass
+
+    return None, None
+
+
+def merge_official_latest(df: pd.DataFrame, stock_id: str) -> tuple[pd.DataFrame, str | None]:
+    latest_df, latest_source = fetch_official_latest(stock_id)
+    base = _clean_ohlcv(df)
+    if latest_df is None or latest_df.empty:
+        return base, None
+
+    official_date = pd.Timestamp(latest_df.iloc[-1]["date"])
+    base_date = pd.Timestamp(base.iloc[-1]["date"]) if not base.empty else pd.Timestamp.min
+
+    if official_date >= base_date:
+        merged = pd.concat([base, latest_df], ignore_index=True)
+        merged = merged.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+        return merged, latest_source if official_date > base_date else None
+    return base, None
 
 
 def fetch_finmind(
@@ -158,7 +254,7 @@ def fetch_stock_data(
     source: str = "auto",
     finmind_token: str = "",
 ) -> tuple[pd.DataFrame, str]:
-    end = date.today()
+    end = _taipei_today()
     start = end - timedelta(days=int(years * 365.25) + 150)
     start_s = start.isoformat()
     end_s = end.isoformat()
@@ -168,7 +264,10 @@ def fetch_stock_data(
 
     if source in ("auto", "finmind"):
         try:
-            return fetch_finmind(stock_id, start_s, end_s, finmind_token), "FinMind"
+            df = fetch_finmind(stock_id, start_s, end_s, finmind_token)
+            df, patched_by = merge_official_latest(df, stock_id)
+            label = "FinMind" + (f" + {patched_by} 最新日" if patched_by else "")
+            return df, label
         except Exception as exc:
             errors.append(f"FinMind：{exc}")
             if source == "finmind":
@@ -177,7 +276,9 @@ def fetch_stock_data(
     if source in ("auto", "yahoo"):
         try:
             df, symbol = fetch_yahoo(stock_id, start_s, end_s)
-            return df, f"Yahoo Finance ({symbol})"
+            df, patched_by = merge_official_latest(df, stock_id)
+            label = f"Yahoo Finance ({symbol})" + (f" + {patched_by} 最新日" if patched_by else "")
+            return df, label
         except Exception as exc:
             errors.append(f"Yahoo：{exc}")
             if source == "yahoo":
