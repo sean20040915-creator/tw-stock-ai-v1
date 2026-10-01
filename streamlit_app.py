@@ -38,7 +38,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v9",
+    page_title="免費台股 AI 多空分析 v9.1",
     page_icon="📈",
     layout="wide",
 )
@@ -115,8 +115,11 @@ def load_small_csv(path_text: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_data(stock_id: str, years: int, source: str, token: str):
+@st.cache_data(ttl=900, show_spinner=False)
+def load_data(stock_id: str, years: int, source: str, token: str, refresh_slot: str):
+    # refresh_slot participates in the cache key so a stale prior-day response
+    # cannot survive indefinitely on Streamlit Community Cloud.
+    _ = refresh_slot
     return fetch_stock_data(stock_id, years=years, source=source, finmind_token=token)
 
 
@@ -368,7 +371,7 @@ if "watchlist_text" not in st.session_state:
 
 secret_finmind_token = get_streamlit_secret("FINMIND_TOKEN")
 
-st.title("📈 免費台股 AI 多空分析系統 v8")
+st.title("📈 免費台股 AI 多空分析系統 v9.1")
 st.caption("投資組合模擬器｜通知中心｜前向驗證｜每日自動快照｜策略研究實驗室｜Walk-forward")
 
 with st.sidebar:
@@ -402,7 +405,14 @@ with st.sidebar:
         st.session_state["one_way_cost_pct"] = one_way_cost_pct
 
     st.divider()
-    st.caption("v8 為研究工具，不是投資建議。『AI』是歷史價格/成交量的機器學習機率，不是保證預測。")
+    if st.button("🔄 強制更新最新行情", use_container_width=True, help="清除價格與模型快取，立即重新向資料來源取得最新日 K。"):
+        load_data.clear()
+        prepare_data.clear()
+        st.success("已清除行情快取，本次將重新抓取最新資料。")
+    st.caption("v9.1 為研究工具，不是投資建議。行情每 15 分鐘自動換一個快取鍵，並用 TWSE / TPEx 官方最新日資料補齊落後日 K。")
+
+now_tw_for_cache = pd.Timestamp.now(tz="Asia/Taipei")
+data_refresh_slot = f"{now_tw_for_cache:%Y-%m-%d-%H}-{now_tw_for_cache.minute // 15}"
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
@@ -423,7 +433,7 @@ stock_name = names.get(stock_id, "")
 
 try:
     with st.spinner(f"正在取得 {stock_id} 的資料並執行 walk-forward…"):
-        raw_df, used_source = load_data(stock_input, years, source, token)
+        raw_df, used_source = load_data(stock_input, years, source, token, data_refresh_slot)
         df, model = prepare_data(raw_df, threshold, retrain_every)
 except Exception as exc:
     st.error(f"目前無法完成個股分析：{exc}")
