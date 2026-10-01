@@ -1,0 +1,23 @@
+台股 AI 多空分析系統 v9.1 — 最新行情 Hotfix
+
+1. 解壓縮本 ZIP。
+2. 到原本 GitHub repository。
+3. 覆蓋根目錄：
+   - stock_engine.py
+   - streamlit_app.py
+4. Commit changes。
+5. 等 Streamlit 自動重新部署。
+6. 打開網站左側，按一次「🔄 強制更新最新行情」。
+7. 查詢 2330。
+8. 確認「最新分析」已到 2026-10-01，收盤價 2510。
+
+請勿覆蓋：
+- data/forward_signals.csv
+- data/notification_events.csv
+- forward_watchlist.csv
+- .github/workflows/
+
+若仍停在 9/30：
+A. 在 Streamlit 右下/右上選單 Reboot app。
+B. 再按「🔄 強制更新最新行情」。
+C. 查看資料來源文字是否含「+ TWSE OpenAPI 最新日」。
