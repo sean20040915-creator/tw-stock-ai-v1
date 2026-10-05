@@ -106,7 +106,7 @@ def fetch_official_latest(stock_id: str) -> tuple[pd.DataFrame, str] | tuple[Non
     headers = {"User-Agent": "Mozilla/5.0 (compatible; tw-stock-ai/1.0)"}
 
     try:
-        r = requests.get(TWSE_LATEST_URL, headers=headers, timeout=15)
+        r = requests.get(TWSE_LATEST_URL, headers=headers, timeout=6)
         r.raise_for_status()
         rows = r.json()
         row = next((x for x in rows if str(x.get("Code", "")).strip() == code), None)
@@ -126,7 +126,7 @@ def fetch_official_latest(stock_id: str) -> tuple[pd.DataFrame, str] | tuple[Non
         pass
 
     try:
-        r = requests.get(TPEX_LATEST_URL, headers=headers, timeout=15)
+        r = requests.get(TPEX_LATEST_URL, headers=headers, timeout=6)
         r.raise_for_status()
         rows = r.json()
         row = next((x for x in rows if str(x.get("SecuritiesCompanyCode", "")).strip() == code), None)
@@ -180,7 +180,7 @@ def fetch_finmind(
     if token.strip():
         headers["Authorization"] = f"Bearer {token.strip()}"
 
-    response = requests.get(FINMIND_URL, params=params, headers=headers, timeout=25)
+    response = requests.get(FINMIND_URL, params=params, headers=headers, timeout=8)
     if response.status_code == 402:
         raise ValueError("FinMind 免費 API 額度已達上限")
     if response.status_code == 403:
@@ -222,7 +222,7 @@ def fetch_yahoo(stock_id: str, start_date: str, end_date: str) -> tuple[pd.DataF
                 progress=False,
                 threads=False,
                 multi_level_index=False,
-                timeout=15,
+                timeout=10,
             )
             if data is None or data.empty:
                 continue
@@ -254,6 +254,12 @@ def fetch_stock_data(
     source: str = "auto",
     finmind_token: str = "",
 ) -> tuple[pd.DataFrame, str]:
+    """Fetch daily OHLCV with a fast-first fallback chain.
+
+    v9.2 auto mode deliberately tries Yahoo first because it is usually faster for
+    long daily history on Streamlit Community Cloud. TWSE/TPEx then patches the
+    newest completed daily bar. FinMind is only the fallback in auto mode.
+    """
     end = _taipei_today()
     start = end - timedelta(days=int(years * 365.25) + 150)
     start_s = start.isoformat()
@@ -261,17 +267,6 @@ def fetch_stock_data(
 
     errors: list[str] = []
     source = source.lower()
-
-    if source in ("auto", "finmind"):
-        try:
-            df = fetch_finmind(stock_id, start_s, end_s, finmind_token)
-            df, patched_by = merge_official_latest(df, stock_id)
-            label = "FinMind" + (f" + {patched_by} 最新日" if patched_by else "")
-            return df, label
-        except Exception as exc:
-            errors.append(f"FinMind：{exc}")
-            if source == "finmind":
-                raise
 
     if source in ("auto", "yahoo"):
         try:
@@ -284,9 +279,18 @@ def fetch_stock_data(
             if source == "yahoo":
                 raise
 
+    if source in ("auto", "finmind"):
+        try:
+            df = fetch_finmind(stock_id, start_s, end_s, finmind_token)
+            df, patched_by = merge_official_latest(df, stock_id)
+            label = "FinMind" + (f" + {patched_by} 最新日" if patched_by else "")
+            return df, label
+        except Exception as exc:
+            errors.append(f"FinMind：{exc}")
+            if source == "finmind":
+                raise
+
     raise ValueError("；".join(errors) or "無法取得股票資料")
-
-
 def fetch_stock_info(token: str = "") -> pd.DataFrame:
     """一次取得台股名稱/市場/產業；失敗時交由 UI 使用內建名稱。"""
     headers = {}
@@ -296,7 +300,7 @@ def fetch_stock_info(token: str = "") -> pd.DataFrame:
         FINMIND_URL,
         params={"dataset": "TaiwanStockInfo"},
         headers=headers,
-        timeout=25,
+        timeout=8,
     )
     response.raise_for_status()
     payload = response.json()
