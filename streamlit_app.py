@@ -32,13 +32,14 @@ from stock_engine import (
     strength_label,
     technical_screen_row,
     train_prediction_model,
+    latest_prediction_probability,
     v_signal_quality,
     watchlist_signal_row,
 )
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v9.1",
+    page_title="免費台股 AI 多空分析 v9.2",
     page_icon="📈",
     layout="wide",
 )
@@ -124,7 +125,16 @@ def load_data(stock_id: str, years: int, source: str, token: str, refresh_slot: 
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def prepare_data(df: pd.DataFrame, threshold: float, retrain_every: int):
+def prepare_quick_data(df: pd.DataFrame):
+    """Fast startup path: indicators + one final RF fit for latest probability."""
+    enriched = add_indicators(df)
+    probability, train_rows = latest_prediction_probability(enriched)
+    return enriched, probability, train_rows
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def prepare_full_model(df: pd.DataFrame, threshold: float, retrain_every: int):
+    """Heavy full expanding-window report. Run only when the user explicitly asks."""
     enriched = add_indicators(df)
     model_result = train_prediction_model(
         enriched,
@@ -371,7 +381,7 @@ if "watchlist_text" not in st.session_state:
 
 secret_finmind_token = get_streamlit_secret("FINMIND_TOKEN")
 
-st.title("📈 免費台股 AI 多空分析系統 v9.1")
+st.title("📈 免費台股 AI 多空分析系統 v9.2")
 st.caption("投資組合模擬器｜通知中心｜前向驗證｜每日自動快照｜策略研究實驗室｜Walk-forward")
 
 with st.sidebar:
@@ -407,9 +417,10 @@ with st.sidebar:
     st.divider()
     if st.button("🔄 強制更新最新行情", use_container_width=True, help="清除價格與模型快取，立即重新向資料來源取得最新日 K。"):
         load_data.clear()
-        prepare_data.clear()
+        prepare_quick_data.clear()
+        prepare_full_model.clear()
         st.success("已清除行情快取，本次將重新抓取最新資料。")
-    st.caption("v9.1 為研究工具，不是投資建議。行情每 15 分鐘自動換一個快取鍵，並用 TWSE / TPEx 官方最新日資料補齊落後日 K。")
+    st.caption("v9.2 效能版：Yahoo → TWSE/TPEx 最新日為快速主路徑，FinMind 僅在自動模式備援；完整 Walk-forward 改為按需執行。")
 
 now_tw_for_cache = pd.Timestamp.now(tz="Asia/Taipei")
 data_refresh_slot = f"{now_tw_for_cache:%Y-%m-%d-%H}-{now_tw_for_cache.minute // 15}"
@@ -428,13 +439,14 @@ source_map = {
 }
 source = source_map.get(source_label, "auto")
 stock_id = normalize_stock_id(stock_input)
-names = stock_name_map(token)
+# Avoid a full TaiwanStockInfo network request during every Streamlit rerun.
+names = dict(KNOWN_NAMES)
 stock_name = names.get(stock_id, "")
 
 try:
-    with st.spinner(f"正在取得 {stock_id} 的資料並執行 walk-forward…"):
+    with st.spinner(f"正在取得 {stock_id} 最新行情…"):
         raw_df, used_source = load_data(stock_input, years, source, token, data_refresh_slot)
-        df, model = prepare_data(raw_df, threshold, retrain_every)
+        df, prob, quick_train_rows = prepare_quick_data(raw_df)
 except Exception as exc:
     st.error(f"目前無法完成個股分析：{exc}")
     st.info("可以先確認股票代號，或把資料來源改成『自動』；若 FinMind 額度用完，系統會嘗試 Yahoo Finance。")
@@ -444,7 +456,6 @@ latest = df.iloc[-1]
 prev = df.iloc[-2]
 support, resistance = recent_support_resistance(df, 20)
 score = float(latest["strength_score"])
-prob = model.probability_up_5d
 latest_signal = latest["signal"] or "—"
 trend = strength_label(score)
 price_delta = float(latest["close"] / prev["close"] - 1)
@@ -469,7 +480,7 @@ def robustness_heatmap_chart(pivot: pd.DataFrame, title: str, percent: bool = Tr
 
 header_name = f" {stock_name}" if stock_name else ""
 st.subheader(f"{stock_id}{header_name}｜最新分析：{latest['date'].date()}")
-st.caption(f"資料來源：{used_source}｜共 {len(df):,} 個交易日｜模型採 expanding-window walk-forward")
+st.caption(f"資料來源：{used_source}｜共 {len(df):,} 個交易日｜最新機率使用 {quick_train_rows:,} 筆已知結果樣本；完整 Walk-forward 請到 AI 分頁按需執行")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("收盤價", f"{latest['close']:.2f}", pct_text(price_delta))
@@ -828,7 +839,7 @@ with portfolio_tab:
             progress = st.progress(0.0, text="正在取得投資組合歷史資料…")
             for i, sid in enumerate(tickers, start=1):
                 try:
-                    raw_pf, _ = load_data(sid, years, source, token)
+                    raw_pf, _ = load_data(sid, years, source, token, data_refresh_slot)
                     data_map[sid] = add_indicators(raw_pf)
                 except Exception as exc:
                     failures.append(f"{sid}: {exc}")
@@ -865,7 +876,7 @@ with portfolio_tab:
                             if "0050" in data_map:
                                 bench_raw = data_map["0050"]
                             else:
-                                bench_raw, _ = load_data("0050", years, source, token)
+                                bench_raw, _ = load_data("0050", years, source, token, data_refresh_slot)
                             benchmark_pf, benchmark_stats_pf = build_benchmark_curve(
                                 bench_raw,
                                 equity_pf["date"],
@@ -1058,7 +1069,7 @@ with robustness_tab:
             load_progress = st.progress(0.0, text="正在取得穩健性研究資料…")
             for i, sid in enumerate(tickers, start=1):
                 try:
-                    raw_rb, _ = load_data(sid, years, source, token)
+                    raw_rb, _ = load_data(sid, years, source, token, data_refresh_slot)
                     data_map_rb[sid] = add_indicators(raw_rb)
                 except Exception as exc:
                     failures_rb.append(f"{sid}: {exc}")
@@ -1206,30 +1217,62 @@ with robustness_tab:
 
 
 with model_tab:
-    st.markdown("#### Walk-forward 模型檢驗")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("方向正確率", pct_text(model.accuracy))
-    m2.metric("ROC AUC", "—" if model.auc is None else f"{model.auc:.3f}")
-    m3.metric("Brier 分數", f"{model.brier:.3f}", help="越低越好；用來看機率預測誤差。")
-    m4.metric("Walk-forward 測試樣本", f"{model.test_rows:,}")
+    st.markdown("#### AI / Walk-forward 模型檢驗")
+    st.caption("v9.2 為避免免費主機每次開站都重跑數十次 Random Forest，完整 expanding-window Walk-forward 改成按需要執行；首頁的最新 5 日機率仍使用同一組 Random Forest 特徵與參數。")
 
-    bt = apply_transaction_cost(model.backtest, one_way_cost=one_way_cost)
-    stats = backtest_stats(bt)
-    b1, b2, b3, b4 = st.columns(4)
-    b1.metric("策略報酬", pct_text(stats["strategy_total"]))
-    b2.metric("同期買進持有", pct_text(stats["benchmark_total"]))
-    b3.metric("策略最大回撤", pct_text(stats["strategy_mdd"]))
-    b4.metric("進場次數", f"{int(stats['trades'])}")
-
-    st.plotly_chart(backtest_chart(bt), use_container_width=True)
-    st.caption(
-        f"規則：每 {model.retrain_every} 個交易日重新訓練一次；預測當下只使用當時已經能知道 5 日結果的舊資料。"
-        f"機率 ≥ {model.threshold:.0%} 時持有下一交易日；單邊成本假設 {one_way_cost:.2%}。不含股利與滑價差異。"
+    run_full_model = st.button(
+        "🧠 執行完整 Walk-forward 檢驗",
+        type="primary",
+        use_container_width=True,
+        key="run_full_walkforward_v92",
     )
-    st.markdown("#### 最終模型特徵重要度")
-    importance = model.feature_importance.copy()
-    importance["importance"] = (importance["importance"] * 100).round(1)
-    st.dataframe(importance, use_container_width=True, hide_index=True)
+    if run_full_model:
+        try:
+            with st.spinner("正在執行完整 expanding-window Walk-forward，第一次可能需要一些時間…"):
+                _, full_model = prepare_full_model(raw_df, threshold, retrain_every)
+                st.session_state["full_model_v92"] = full_model
+                st.session_state["full_model_key_v92"] = (
+                    stock_id, years, threshold, retrain_every,
+                    pd.Timestamp(df["date"].max()).date().isoformat(),
+                )
+        except Exception as exc:
+            st.error(f"Walk-forward 無法完成：{exc}")
+
+    full_model = st.session_state.get("full_model_v92")
+    full_key = st.session_state.get("full_model_key_v92")
+    current_key = (
+        stock_id, years, threshold, retrain_every,
+        pd.Timestamp(df["date"].max()).date().isoformat(),
+    )
+    if full_model is None or full_key != current_key:
+        st.info("完整 Walk-forward 尚未執行，或目前股票／參數／資料日已改變。需要研究模型績效時再按上方按鈕即可。")
+        q1, q2 = st.columns(2)
+        q1.metric("目前最新 5 日上漲機率", f"{prob * 100:.1f}%")
+        q2.metric("最新模型訓練樣本", f"{quick_train_rows:,}")
+    else:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("方向正確率", pct_text(full_model.accuracy))
+        m2.metric("ROC AUC", "—" if full_model.auc is None else f"{full_model.auc:.3f}")
+        m3.metric("Brier 分數", f"{full_model.brier:.3f}", help="越低越好；用來看機率預測誤差。")
+        m4.metric("Walk-forward 測試樣本", f"{full_model.test_rows:,}")
+
+        bt = apply_transaction_cost(full_model.backtest, one_way_cost=one_way_cost)
+        stats = backtest_stats(bt)
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("策略報酬", pct_text(stats["strategy_total"]))
+        b2.metric("同期買進持有", pct_text(stats["benchmark_total"]))
+        b3.metric("策略最大回撤", pct_text(stats["strategy_mdd"]))
+        b4.metric("進場次數", f"{int(stats['trades'])}")
+
+        st.plotly_chart(backtest_chart(bt), use_container_width=True)
+        st.caption(
+            f"規則：每 {full_model.retrain_every} 個交易日重新訓練一次；預測當下只使用當時已經能知道 5 日結果的舊資料。"
+            f"機率 ≥ {full_model.threshold:.0%} 時持有下一交易日；單邊成本假設 {one_way_cost:.2%}。不含股利與滑價差異。"
+        )
+        st.markdown("#### 最終模型特徵重要度")
+        importance = full_model.feature_importance.copy()
+        importance["importance"] = (importance["importance"] * 100).round(1)
+        st.dataframe(importance, use_container_width=True, hide_index=True)
 
 
 with daily_tab:
@@ -1263,7 +1306,7 @@ with daily_tab:
         help="例如：2330, 2317, 2454。最多使用前 25 檔。",
     )
     watchlist = parse_tickers(watchlist_text)[:25]
-    names_now = stock_name_map(token)
+    names_now = dict(KNOWN_NAMES)
     w1, w2 = st.columns([2, 1])
     w1.write(f"目前自選股：{len(watchlist)} 檔｜" + ("、".join(watchlist) if watchlist else "尚未設定"))
     w2.download_button(
@@ -1281,7 +1324,7 @@ with daily_tab:
         for idx, ticker in enumerate(watchlist, start=1):
             progress.progress((idx - 1) / max(len(watchlist), 1), text=f"正在掃描 {ticker}（{idx}/{len(watchlist)}）")
             try:
-                raw, _ = load_data(ticker, 2, source, token)
+                raw, _ = load_data(ticker, 2, source, token, data_refresh_slot)
                 rows.append(watchlist_signal_row(ticker, raw, names_now.get(ticker, KNOWN_NAMES.get(ticker, ""))))
             except Exception as exc:
                 errors.append(f"{ticker}: {exc}")
@@ -1419,7 +1462,7 @@ with screener_tab:
         for idx, ticker in enumerate(selected, start=1):
             progress.progress((idx - 1) / max(len(selected), 1), text=f"正在掃描 {ticker}（{idx}/{len(selected)}）")
             try:
-                raw, _ = load_data(ticker, 2, source, token)
+                raw, _ = load_data(ticker, 2, source, token, data_refresh_slot)
                 rows.append(technical_screen_row(ticker, raw, screen_names.get(ticker, KNOWN_NAMES.get(ticker, ""))))
             except Exception as exc:
                 errors.append(f"{ticker}: {exc}")
