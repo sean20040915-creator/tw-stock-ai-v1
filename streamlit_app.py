@@ -389,7 +389,7 @@ with st.sidebar:
     with st.form("query_form"):
         ticker_input = st.text_input("股票代號", value=st.session_state.get("ticker", "2330"), help="例如：2330、2317、2454")
         years = st.select_slider("歷史資料期間", options=[3, 5, 8], value=st.session_state.get("years", 3))
-        source_options = ["自動（FinMind → Yahoo 備援）", "只用 FinMind", "只用 Yahoo Finance"]
+        source_options = ["自動（Yahoo → 官方最新日 → FinMind 備援）", "只用 FinMind", "只用 Yahoo Finance"]
         saved_source = st.session_state.get("source_label", source_options[0])
         saved_index = source_options.index(saved_source) if saved_source in source_options else 0
         source_label = st.selectbox("資料來源", source_options, index=saved_index)
@@ -427,13 +427,13 @@ data_refresh_slot = f"{now_tw_for_cache:%Y-%m-%d-%H}-{now_tw_for_cache.minute //
 
 stock_input = st.session_state.get("ticker", "2330")
 years = int(st.session_state.get("years", 3))
-source_label = st.session_state.get("source_label", "自動（FinMind → Yahoo 備援）")
+source_label = st.session_state.get("source_label", "自動（Yahoo → 官方最新日 → FinMind 備援）")
 token = st.session_state.get("finmind_token", "")
 threshold = float(st.session_state.get("threshold", 0.55))
 retrain_every = int(st.session_state.get("retrain_every", 30))
 one_way_cost = float(st.session_state.get("one_way_cost_pct", 0.15)) / 100
 source_map = {
-    "自動（FinMind → Yahoo 備援）": "auto",
+    "自動（Yahoo → 官方最新日 → FinMind 備援）": "auto",
     "只用 FinMind": "finmind",
     "只用 Yahoo Finance": "yahoo",
 }
