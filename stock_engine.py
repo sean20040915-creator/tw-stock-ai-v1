@@ -15,6 +15,8 @@ from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_LATEST_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TPEX_LATEST_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+TWSE_HISTORY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+TPEX_HISTORY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock"
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 FEATURES = [
     "ret_1",
@@ -164,6 +166,133 @@ def merge_official_latest(df: pd.DataFrame, stock_id: str) -> tuple[pd.DataFrame
     return base, None
 
 
+
+def fetch_twse_official_month(stock_id: str, month_date=None) -> pd.DataFrame:
+    """Fetch one month of official TWSE daily bars for gap repair."""
+    code = normalize_stock_id(stock_id)
+    month = pd.Timestamp(month_date or _taipei_today()).replace(day=1)
+    params = {
+        "response": "json",
+        "date": month.strftime("%Y%m01"),
+        "stockNo": code,
+    }
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; tw-stock-ai/1.0)"}
+    response = requests.get(TWSE_HISTORY_URL, params=params, headers=headers, timeout=6)
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("data", [])
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+    records = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 7:
+            continue
+        records.append({
+            "date": _parse_roc_date(row[0]),
+            "open": _number(row[3]),
+            "high": _number(row[4]),
+            "low": _number(row[5]),
+            "close": _number(row[6]),
+            "volume": _number(row[1]),
+        })
+    if not records:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    return _clean_ohlcv(pd.DataFrame(records))
+
+
+def fetch_tpex_official_month(stock_id: str, month_date=None) -> pd.DataFrame:
+    """Fetch one month of official TPEx daily bars for four-digit common stocks."""
+    code = normalize_stock_id(stock_id)
+    # TPEx historical volume is published in lots; only use this repair for
+    # ordinary four-digit equities where the 1 lot = 1,000 shares convention is safe.
+    if len(code) != 4 or not code.isdigit():
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+    month = pd.Timestamp(month_date or _taipei_today()).replace(day=1)
+    params = {
+        "date": month.strftime("%Y/%m/01"),
+        "code": code,
+        "response": "json",
+    }
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; tw-stock-ai/1.0)"}
+    response = requests.get(TPEX_HISTORY_URL, params=params, headers=headers, timeout=6)
+    response.raise_for_status()
+    payload = response.json()
+    tables = payload.get("tables", [])
+    if not isinstance(tables, list) or not tables:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    rows = tables[0].get("data", []) if isinstance(tables[0], dict) else []
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+    records = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 7:
+            continue
+        lots = _number(row[1])
+        records.append({
+            "date": _parse_roc_date(row[0]),
+            "open": _number(row[3]),
+            "high": _number(row[4]),
+            "low": _number(row[5]),
+            "close": _number(row[6]),
+            "volume": lots * 1000 if pd.notna(lots) else np.nan,
+        })
+    if not records:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    return _clean_ohlcv(pd.DataFrame(records))
+
+
+def repair_current_month_history(
+    df: pd.DataFrame,
+    stock_id: str,
+    market_hint: str | None = None,
+) -> tuple[pd.DataFrame, str | None, int]:
+    """Replace/fill the current month's bars from the official exchange history.
+
+    This fixes interior gaps (for example: vendor has 10/13 but accidentally
+    omits 10/12), which a latest-day-only patch cannot repair.
+    """
+    base = _clean_ohlcv(df)
+    official = pd.DataFrame()
+    source = None
+
+    order = []
+    if market_hint == "twse":
+        order = ["twse"]
+    elif market_hint == "tpex":
+        order = ["tpex"]
+    else:
+        order = ["twse", "tpex"]
+
+    for market in order:
+        try:
+            if market == "twse":
+                candidate = fetch_twse_official_month(stock_id)
+                candidate_source = "TWSE STOCK_DAY"
+            else:
+                candidate = fetch_tpex_official_month(stock_id)
+                candidate_source = "TPEx tradingStock"
+            if candidate is not None and not candidate.empty:
+                official = candidate
+                source = candidate_source
+                break
+        except Exception:
+            continue
+
+    if official.empty:
+        return base, None, 0
+
+    base_dates = set(pd.to_datetime(base["date"]).dt.normalize())
+    official_dates = set(pd.to_datetime(official["date"]).dt.normalize())
+    missing_count = len(official_dates - base_dates)
+
+    # Official exchange rows win on duplicate dates for the live current month.
+    merged = pd.concat([base, official], ignore_index=True)
+    merged = merged.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+    return _clean_ohlcv(merged), source, missing_count
+
 def fetch_finmind(
     stock_id: str,
     start_date: str,
@@ -256,7 +385,7 @@ def fetch_stock_data(
 ) -> tuple[pd.DataFrame, str]:
     """Fetch daily OHLCV with a fast-first fallback chain.
 
-    v9.2 auto mode deliberately tries Yahoo first because it is usually faster for
+    v9.3 auto mode uses Yahoo for long history, then reconciles the current month
     long daily history on Streamlit Community Cloud. TWSE/TPEx then patches the
     newest completed daily bar. FinMind is only the fallback in auto mode.
     """
@@ -271,8 +400,18 @@ def fetch_stock_data(
     if source in ("auto", "yahoo"):
         try:
             df, symbol = fetch_yahoo(stock_id, start_s, end_s)
+            market_hint = "tpex" if str(symbol).upper().endswith(".TWO") else "twse"
+            df, month_source, repaired_days = repair_current_month_history(
+                df, stock_id, market_hint=market_hint
+            )
             df, patched_by = merge_official_latest(df, stock_id)
-            label = f"Yahoo Finance ({symbol})" + (f" + {patched_by} 最新日" if patched_by else "")
+            label = f"Yahoo Finance ({symbol})"
+            if month_source:
+                label += f" + {month_source} 當月校正"
+                if repaired_days:
+                    label += f"（補 {repaired_days} 日）"
+            if patched_by:
+                label += f" + {patched_by} 最新日"
             return df, label
         except Exception as exc:
             errors.append(f"Yahoo：{exc}")
@@ -282,8 +421,17 @@ def fetch_stock_data(
     if source in ("auto", "finmind"):
         try:
             df = fetch_finmind(stock_id, start_s, end_s, finmind_token)
+            df, month_source, repaired_days = repair_current_month_history(
+                df, stock_id, market_hint=None
+            )
             df, patched_by = merge_official_latest(df, stock_id)
-            label = "FinMind" + (f" + {patched_by} 最新日" if patched_by else "")
+            label = "FinMind"
+            if month_source:
+                label += f" + {month_source} 當月校正"
+                if repaired_days:
+                    label += f"（補 {repaired_days} 日）"
+            if patched_by:
+                label += f" + {patched_by} 最新日"
             return df, label
         except Exception as exc:
             errors.append(f"FinMind：{exc}")
