@@ -39,7 +39,7 @@ from stock_engine import (
 
 
 st.set_page_config(
-    page_title="免費台股 AI 多空分析 v9.2",
+    page_title="免費台股 AI 多空分析 v9.3",
     page_icon="📈",
     layout="wide",
 )
@@ -381,7 +381,7 @@ if "watchlist_text" not in st.session_state:
 
 secret_finmind_token = get_streamlit_secret("FINMIND_TOKEN")
 
-st.title("📈 免費台股 AI 多空分析系統 v9.2")
+st.title("📈 免費台股 AI 多空分析系統 v9.3")
 st.caption("投資組合模擬器｜通知中心｜前向驗證｜每日自動快照｜策略研究實驗室｜Walk-forward")
 
 with st.sidebar:
@@ -420,7 +420,7 @@ with st.sidebar:
         prepare_quick_data.clear()
         prepare_full_model.clear()
         st.success("已清除行情快取，本次將重新抓取最新資料。")
-    st.caption("v9.2 效能版：Yahoo → TWSE/TPEx 最新日為快速主路徑，FinMind 僅在自動模式備援；完整 Walk-forward 改為按需執行。")
+    st.caption("v9.3 效能版：Yahoo 長期歷史 + TWSE/TPEx 當月官方日 K 校正；會自動補回月內遺漏交易日。FinMind 僅在自動模式備援。")
 
 now_tw_for_cache = pd.Timestamp.now(tz="Asia/Taipei")
 data_refresh_slot = f"{now_tw_for_cache:%Y-%m-%d-%H}-{now_tw_for_cache.minute // 15}"
@@ -1218,7 +1218,7 @@ with robustness_tab:
 
 with model_tab:
     st.markdown("#### AI / Walk-forward 模型檢驗")
-    st.caption("v9.2 為避免免費主機每次開站都重跑數十次 Random Forest，完整 expanding-window Walk-forward 改成按需要執行；首頁的最新 5 日機率仍使用同一組 Random Forest 特徵與參數。")
+    st.caption("v9.3 為避免免費主機每次開站都重跑數十次 Random Forest，完整 expanding-window Walk-forward 改成按需要執行；首頁的最新 5 日機率仍使用同一組 Random Forest 特徵與參數。")
 
     run_full_model = st.button(
         "🧠 執行完整 Walk-forward 檢驗",
